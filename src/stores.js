@@ -8,6 +8,7 @@
  */
 
 import { AnnotationStore } from './annotations.js';
+import { WorkspaceLibrary } from './library.js';
 import { DocumentStore } from './store.js';
 import { SuggestionStore } from './suggestions.js';
 
@@ -20,6 +21,7 @@ export function createStoreRegistry(config) {
   const documents = new Map();
   const annotations = new Map();
   const suggestions = new Map();
+  const libraries = new Map();
 
   return {
     /**
@@ -62,6 +64,20 @@ export function createStoreRegistry(config) {
         suggestions.set(workspacePath, store);
       }
       return store;
+    },
+
+    /**
+     * 取某工作区的用户库（自定义格式集 + 自定义写作类型）。
+     * @param workspacePath - 工作区绝对路径。
+     * @returns WorkspaceLibrary
+     */
+    libraryFor(workspacePath) {
+      let library = libraries.get(workspacePath);
+      if (library === undefined) {
+        library = new WorkspaceLibrary(workspacePath, config.stateDir);
+        libraries.set(workspacePath, library);
+      }
+      return library;
     },
   };
 }

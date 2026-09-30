@@ -31,6 +31,8 @@ const DEFAULT_CONFIG = {
   // 开发期开关：让界面自动做一次交互自检（选中正文 → 确认浮动工具条出现），
   // 结果回报到 /client-report。默认关闭，交付版本不会打扰用户。
   interactionSelfTest: false,
+  // 开发期开关：自动切到整页工作台做一次结构自检，然后切回来。
+  workbenchSelfTest: false,
 };
 
 /**
@@ -49,6 +51,7 @@ function resolveConfig(raw) {
       : DEFAULT_CONFIG.promptSectionOrder,
     maxDocumentBytes: positive(input.maxDocumentBytes, DEFAULT_CONFIG.maxDocumentBytes),
     interactionSelfTest: input.interactionSelfTest === true,
+    workbenchSelfTest: input.workbenchSelfTest === true,
   };
 }
 
@@ -62,7 +65,7 @@ export function apply(ctx, rawConfig) {
   const resolveWorkspacePath = createWorkspaceResolver(ctx);
   const listWorkspaces = createWorkspaceLister(ctx);
   /** 界面与工具共用同一批存储实例，写入串行链才不会各管各的。 */
-  const { storeFor, annotationsFor, suggestionsFor } = createStoreRegistry(config);
+  const { storeFor, annotationsFor, suggestionsFor, libraryFor } = createStoreRegistry(config);
   /** 事件总线：把新版本与「撰写中」实时推给界面。 */
   const bus = createEventBus();
 
@@ -128,6 +131,7 @@ export function apply(ctx, rawConfig) {
             storeFor,
             annotationsFor,
             suggestionsFor,
+            libraryFor,
             bus,
             logger: ctx.logger,
           }),
@@ -138,7 +142,15 @@ export function apply(ctx, rawConfig) {
 
   // 3) Agent 工具：让模型真正能读写画布、读写批注、提出修改建议、套用格式。
   ctx.inject(['tools'], (scoped) => {
-    registerWritingTools({ ctx: scoped, resolveWorkspacePath, storeFor, annotationsFor, suggestionsFor, bus });
+    registerWritingTools({
+      ctx: scoped,
+      resolveWorkspacePath,
+      storeFor,
+      annotationsFor,
+      suggestionsFor,
+      libraryFor,
+      bus,
+    });
   });
 
   ctx.logger.info(

@@ -239,6 +239,18 @@ window.__ModuleLoader__.load({
   border: 1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.35));
   background: transparent; color: inherit; }
 .wcv-mini:hover { border-color: var(--dsw-alias-brand-primary, #4d6bfe); }
+.wcv-iconBtn { display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; padding: 0; border-radius: 7px; cursor: pointer;
+  border: 1px solid transparent; background: transparent;
+  color: var(--dsw-alias-label-secondary, #6b6b6b); flex: none; }
+.wcv-iconBtn:hover:not(:disabled) { background: var(--dsw-alias-bg-layer-2, rgba(128,128,128,0.14));
+  color: var(--dsw-alias-label-primary, #1a1a1a); }
+.wcv-iconBtn:disabled { opacity: 0.4; cursor: default; }
+.wcv-iconBtn--primary { border-color: var(--dsw-alias-border-l2, rgba(128,128,128,0.4));
+  background: var(--dsw-alias-bg-layer-1, rgba(128,128,128,0.06)); }
+.wcv-iconBtn--primary:hover:not(:disabled) { border-color: var(--dsw-alias-brand-primary, #4d6bfe); }
+.wcv-docRow { display: flex; align-items: center; gap: 6px; }
+.wcv-docMain { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 
 /* ---- 窄栏底部抽屉：默认收起，绝不挤压正文 ---- */
 .wcv-hidden { display: none !important; }
@@ -253,6 +265,19 @@ window.__ModuleLoader__.load({
 .wcv-drawerSpacer { flex: 1; }
 .wcv-drawerMeta { font-size: 11px; color: var(--dsw-alias-label-secondary, #6b6b6b); }
 .wcv-drawerBody { flex: 1; min-height: 0; overflow: auto; padding: 0 10px 10px; }
+/* 开写前的写作模式选择 */
+.wcv-onboard { position: absolute; inset: 0; z-index: 3; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 10px; padding: 20px;
+  background: var(--dsw-alias-bg-base, #fff); border-radius: 10px; text-align: center; }
+.wcv-onboardTitle { font-size: 17px; font-weight: 700; }
+.wcv-onboardHint { font-size: 12.5px; color: var(--dsw-alias-label-secondary, #6b6b6b); max-width: 420px; line-height: 1.7; }
+.wcv-chips { display: flex; flex-wrap: wrap; gap: 7px; justify-content: center; max-width: 460px; margin-top: 4px; }
+.wcv-chip { font: inherit; font-size: 12.5px; padding: 5px 12px; border-radius: 999px; cursor: pointer;
+  border: 1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.4));
+  background: var(--dsw-alias-bg-layer-1, rgba(128,128,128,0.06)); color: inherit; }
+.wcv-chip:hover { border-color: var(--dsw-alias-brand-primary, #4d6bfe); }
+.wcv-chip[data-custom="true"] { border-style: dashed; }
+.wcv-chip--ghost { border-style: dashed; color: var(--dsw-alias-label-secondary, #6b6b6b); }
 `;
 
     /** 注入样式（模块体副作用，仅在 bundle 首次 materialize 时执行一次）。 */
@@ -373,7 +398,7 @@ window.__ModuleLoader__.load({
       const [suggestions, setSuggestions] = React.useState([]);
       const [writing, setWriting] = React.useState({ active: false, startedAt: null, note: '' });
       const [selection, setSelection] = React.useState(null);
-      const [specs, setSpecs] = React.useState([]);
+      const [sets, setSets] = React.useState([]);
       const [exportSpec, setExportSpec] = React.useState('');
       const [exporting, setExporting] = React.useState(false);
       const [exportResult, setExportResult] = React.useState(null);
@@ -382,7 +407,7 @@ window.__ModuleLoader__.load({
       /** 空内容覆盖被拦下时的提示（只有用户显式确认才允许清空）。 */
       const [emptyBlocked, setEmptyBlocked] = React.useState(false);
       /** 界面开关（目前只有开发期交互自检）。 */
-      const [uiFlags, setUiFlags] = React.useState({ interactionSelfTest: false });
+      const [uiFlags, setUiFlags] = React.useState({ interactionSelfTest: false, workbenchSelfTest: false });
 
       // 注意：这两个派生值必须定义在任何引用了它们的 effect **之前**。
       // 之前放在渲染段里，被 effect 的依赖数组引用，触发暂时性死区（TDZ）
@@ -394,7 +419,12 @@ window.__ModuleLoader__.load({
         let cancelled = false;
         apiGet('/ui-flags')
           .then(({ ok, data }) => {
-            if (!cancelled && ok) setUiFlags({ interactionSelfTest: data?.interactionSelfTest === true });
+            if (!cancelled && ok) {
+              setUiFlags({
+                interactionSelfTest: data?.interactionSelfTest === true,
+                workbenchSelfTest: data?.workbenchSelfTest === true,
+              });
+            }
           })
           .catch(() => {});
         return () => {
@@ -402,18 +432,18 @@ window.__ModuleLoader__.load({
         };
       }, []);
 
-      // 格式规格清单来自宿主（预设的字体/字号/行距）。
+      // 格式集（Set）：内置 Markdown 体例 + 内置 DOCX 规格 + 用户自定义。
       React.useEffect(() => {
         let cancelled = false;
-        apiGet('/format-specs')
+        apiGet('/format-sets', targetQuery(target))
           .then(({ ok, data }) => {
-            if (!cancelled && ok && Array.isArray(data?.specs)) setSpecs(data.specs);
+            if (!cancelled && ok && Array.isArray(data?.sets)) setSets(data.sets);
           })
           .catch(() => {});
         return () => {
           cancelled = true;
         };
-      }, []);
+      }, [targetKey]);
 
       // 写作类型清单来自宿主（每个类型都是独立的插件行，可单独启用/停用）。
       React.useEffect(() => {
@@ -440,6 +470,9 @@ window.__ModuleLoader__.load({
       const highlightRef = React.useRef(null);
       /** 整个画布的根节点，用于界面自检。 */
       const rootRef = React.useRef(null);
+      /** 插件上下文，供开发期自检使用（打开工作台等）。 */
+      const ctxRef = React.useRef(null);
+      ctxRef.current = props.ctx ?? null;
       /** 逐字呈现用的定时器，切换目标时必须清掉。 */
       const revealTimerRef = React.useRef(null);
 
@@ -552,7 +585,10 @@ window.__ModuleLoader__.load({
             hiddenColumns: all('.wcv-hidden').length,
             drawer: one('.wcv-drawer') !== null,
             drawerOpen: one('.wcv-drawerBody') !== null,
-            exportButton: [...all('.wcv-btn')].some((node) => node.textContent.includes('套用格式')),
+            // 导出已改为图标按钮，用 title 判定
+            exportButton: [...all('[title]')].some((node) => /套用|设为本文体例/.test(node.getAttribute('title') ?? '')),
+            iconButtons: all('.wcv-iconBtn').length,
+            setOptions: all('.wcv-select option').length,
             specOptions: all('.wcv-select option').length,
             annotationPanel: one('.wcv-colBody') !== null,
             annotationCards: all('.wcv-anno').length,
@@ -612,6 +648,25 @@ window.__ModuleLoader__.load({
                     : root.querySelector('.wcv-diffStat').textContent,
               });
             }, 500);
+
+            // 再切到整页工作台看一眼「新建」入口在不在，然后切回来。
+            const layout = optionalService(ctxRef.current ?? {}, 'layout');
+            if (uiFlags.workbenchSelfTest !== true || layout === undefined || typeof layout.selectPanel !== 'function') {
+              return;
+            }
+            layout.selectPanel(PANEL_ID);
+            setTimeout(() => {
+              const host = document.querySelector('.wcv-root--workbench');
+              const titles = host === null ? [] : [...host.querySelectorAll('[title]')].map((n) => n.getAttribute('title'));
+              report('selfcheck:workbench', {
+                mounted: host !== null,
+                iconButtons: host === null ? 0 : host.querySelectorAll('.wcv-iconBtn').length,
+                titles,
+                hasDocList: host === null ? false : host.querySelector('.wcv-colBody') !== null,
+                hasPanelHeader: host === null ? false : host.querySelector('.wcv-header') !== null,
+              });
+              layout.selectPanel(null);
+            }, 900);
           }, 300);
         }, 1500);
         return () => clearTimeout(timer);
@@ -855,6 +910,17 @@ window.__ModuleLoader__.load({
         setExporting(true);
         setExportResult(null);
         try {
+          if (currentSet !== undefined && currentSet.kind === 'markdown') {
+            // Markdown 体例不需要导出文件：把体例写进文档元信息，供 AI 遵循。
+            const { ok, data } = await apiPost('/doc/type', { ...targetBody(target), typeId: currentTypeId });
+            void ok;
+            void data;
+            setMessage(
+              `「${currentSet.name}」是 Markdown 体例：已记录为本文体例，AI 会按它的标题层级与分隔线来写；不需要导出文件。`,
+            );
+            setExporting(false);
+            return;
+          }
           const { ok, data } = await apiPost('/export', {
             ...targetBody(target),
             specId: exportSpec === '' ? undefined : exportSpec,
@@ -1026,9 +1092,9 @@ window.__ModuleLoader__.load({
       const title = doc?.meta?.title ?? (doc?.exists === false ? '未命名文档' : '写作画布');
       const currentTypeId = doc?.meta?.writingType ?? '';
       const currentType = types.find((type) => type.id === currentTypeId);
-      /** 当前选用的 DOCX 格式规格：用户显式选择的优先，其次取写作类型的默认规格。 */
-      const currentSpecId =
-        exportSpec !== '' ? exportSpec : (doc?.meta?.format?.spec ?? specs[0]?.id ?? '');
+      /** 当前选用的格式集：用户显式选择的优先，其次文档记录的，其次第一个。 */
+      const currentSetId = exportSpec !== '' ? exportSpec : (doc?.meta?.format?.set ?? sets[0]?.id ?? '');
+      const currentSet = sets.find((item) => item.id === currentSetId);
 
       /** 修改建议列表内容：原文与建议对照，逐条接受或拒绝。 */
       const renderSuggestionsBody = () =>
@@ -1313,37 +1379,71 @@ window.__ModuleLoader__.load({
             ? h('span', { className: 'wcv-formatTag' }, '尚未启用任何写作类型插件')
             : null,
 
-          // 一键套用格式：画布只管内容，版式交给预设规格 + Python 落地。
-          h('span', { className: 'wcv-toolSep' }),
+        ),
+
+        // 第二行：格式集（Set）+ 导出。文字尽量少，动作放图标里。
+        h(
+          'div',
+          { className: 'wcv-typeBar' },
+          h('span', { className: 'wcv-typeLabel', title: '格式集：Markdown 体例或 DOCX 版式' }, '格式集'),
           h(
             'select',
             {
               className: 'wcv-select',
-              value: currentSpecId,
-              title: 'DOCX 格式规格（字体 / 字号 / 行距）',
+              value: currentSetId,
+              title: currentSet === undefined ? '选择格式集' : currentSet.description,
               onChange: (event) => {
                 setExportSpec(event.target.value);
                 setExportResult(null);
               },
             },
-            ...specs.map((spec) =>
+            ...sets.map((item) =>
               h(
                 'option',
-                { key: spec.id, value: spec.id },
-                `${spec.body.fontEastAsia} ${spec.body.sizePt}pt${
-                  spec.body.lineSpacingPt ? ` · 固定行距 ${spec.body.lineSpacingPt}pt` : ''
-                }`,
+                { key: item.id, value: item.id },
+                `${item.kind === 'docx' ? 'DOCX' : 'MD'} · ${item.name}${item.source === 'user' ? '（我的）' : ''}`,
               ),
             ),
           ),
+          currentSet !== undefined && currentSet.source === 'user'
+            ? iconButton({
+                icon: IconTrash,
+                title: '删除这个格式集',
+                onClick: async () => {
+                  await apiPost('/format-sets/delete', { ...targetBody(target), id: currentSet.id });
+                  setExportSpec('');
+                  setSets((list) => list.filter((item) => item.id !== currentSet.id));
+                },
+              })
+            : null,
+          currentSet !== undefined && currentSet.kind === 'docx'
+            ? iconButton({
+                icon: exporting ? IconRefresh : IconDownload,
+                title: exporting ? '正在套用…' : '套用这个版式并导出 DOCX（生成后会回读校验）',
+                primary: true,
+                disabled: exporting,
+                onClick: () => void applyFormatSpec(),
+              })
+            : iconButton({
+                icon: IconCheck,
+                title: '把这个 Markdown 体例设为本文体例',
+                primary: true,
+                disabled: currentSetId === '',
+                onClick: () => void applyFormatSpec(),
+              }),
           h(
             'button',
             {
-              className: 'wcv-btn',
-              disabled: exporting,
-              onClick: () => void applyFormatSpec(),
+              className: 'wcv-mini',
+              title: '告诉我你想要的格式，我把它做成一个可复用的 Set',
+              onClick: () =>
+                setMessage(
+                  '想新建格式集？直接在对话里告诉我：' +
+                    '「做成格式集：正文小四宋体、标题黑体、行距 1.5 倍」或「按这个模板的样式做一套」。' +
+                    '我会整理成 Set 存进这个工作区，之后在这里一键选用。',
+                ),
             },
-            exporting ? '正在套用…' : '套用格式并导出',
+            '+ Set',
           ),
           exportResult !== null
             ? h(
@@ -1459,6 +1559,61 @@ window.__ModuleLoader__.load({
                     ),
                   ),
                 ),
+                // 空白文档 + 未指定类型时，先让用户选写作模式（新会话的入口体验）
+                text.trim() === '' && currentTypeId === '' && !writing.active
+                  ? h(
+                      'div',
+                      { className: 'wcv-onboard' },
+                      h('div', { className: 'wcv-onboardTitle' }, '开始写作'),
+                      h(
+                        'div',
+                        { className: 'wcv-onboardHint' },
+                        '先选一个写作类型——选好后我会先问清必要信息再动笔。',
+                      ),
+                      h(
+                        'div',
+                        { className: 'wcv-chips' },
+                        h(
+                          'button',
+                          {
+                            className: 'wcv-chip',
+                            title: '不限定类型，按通用要求写',
+                            onClick: () => {
+                              setMessage('好，这次不限定写作类型。你直接说要写什么，我会先问清必要信息。');
+                              editorRef.current?.focus();
+                            },
+                          },
+                          '暂不指定',
+                        ),
+                        ...types.map((type) =>
+                          h(
+                            'button',
+                            {
+                              key: type.id,
+                              className: 'wcv-chip',
+                              'data-custom': type.custom === true ? 'true' : 'false',
+                              title: `${type.summary ?? ''}${(type.mustConfirm ?? []).length > 0 ? `\n生成前会确认：${type.mustConfirm.join('、')}` : ''}`,
+                              onClick: () => void chooseType(type.id),
+                            },
+                            type.label,
+                          ),
+                        ),
+                        h(
+                          'button',
+                          {
+                            className: 'wcv-chip wcv-chip--ghost',
+                            title: '想要内置类型覆盖不到的文种？告诉我，我给你建一个',
+                            onClick: () =>
+                              setMessage(
+                                '想新建写作类型？在对话里告诉我它的用途与要求（例如「我要写产品需求文档，必须包含背景、目标、范围、验收标准」），' +
+                                  '我会为它建立专属的硬约束、必确认要素与自检清单，之后就能在这里选到。',
+                              ),
+                          },
+                          '+ 新建类型',
+                        ),
+                      ),
+                    )
+                  : null,
                 h('textarea', {
                   className: 'wcv-editor wcv-editor--over',
                   ref: editorRef,
@@ -1635,6 +1790,61 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * 极简图标集：按钮尽量用图标，说明文字放在 title（悬浮提示）里。
+     * 全部用 currentColor 描边，自动跟随主题。
+     */
+    function makeIcon(paths, viewBox) {
+      return function Icon(props) {
+        const size =
+          props !== null && typeof props === 'object' && typeof props.size === 'number' && props.size > 0
+            ? props.size
+            : 16;
+        return h(
+          'svg',
+          {
+            width: size,
+            height: size,
+            viewBox: viewBox ?? '0 0 24 24',
+            fill: 'none',
+            stroke: 'currentColor',
+            strokeWidth: 1.7,
+            strokeLinecap: 'round',
+            strokeLinejoin: 'round',
+            'aria-hidden': 'true',
+          },
+          ...paths.map((d, index) => h('path', { key: index, d })),
+        );
+      };
+    }
+
+    const IconPlus = makeIcon(['M12 5v14', 'M5 12h14']);
+    const IconChat = makeIcon(['M21 12a8 8 0 0 1-8 8H7l-4 3v-6a8 8 0 0 1 8-8h2a8 8 0 0 1 8 3Z']);
+    const IconDoc = makeIcon(['M7 3h7l5 5v13H7z', 'M14 3v5h5']);
+    const IconTrash = makeIcon(['M4 7h16', 'M9 7V5h6v2', 'M6 7l1 13h10l1-13']);
+    const IconCheck = makeIcon(['M4 12.5 9 17.5 20 6.5']);
+    const IconRefresh = makeIcon(['M20 12a8 8 0 1 1-2.3-5.6', 'M20 4v5h-5']);
+    const IconDownload = makeIcon(['M12 3v12', 'M7 11l5 5 5-5', 'M4 20h16']);
+
+    /**
+     * 统一的图标按钮：title 必填（悬浮说明），图标本身不承载文字。
+     * @param props - { icon, title, onClick, primary, disabled, keepFocus, size }
+     */
+    function iconButton(props) {
+      return h(
+        'button',
+        {
+          className: `wcv-iconBtn${props.primary === true ? ' wcv-iconBtn--primary' : ''}`,
+          title: props.title,
+          'aria-label': props.title,
+          disabled: props.disabled === true,
+          onMouseDown: props.keepFocus === true ? (event) => event.preventDefault() : undefined,
+          onClick: props.onClick,
+        },
+        h(props.icon, { size: props.size ?? 16 }),
+      );
+    }
+
+    /**
      * 侧边栏入口图标（一支笔）。
      * 官方 owner props 契约：{ size: number, active: boolean }。
      */
@@ -1667,7 +1877,7 @@ window.__ModuleLoader__.load({
     function CanvasTabBody(props) {
       const sessionId = props?.sessionId;
       // 用会话 id 作为 key，切换会话时强制重新挂载 Canvas，避免串内容。
-      return h(Canvas, { key: String(sessionId), target: { sessionId }, variant: 'pane' });
+      return h(Canvas, { key: String(sessionId), target: { sessionId }, variant: 'pane', ctx: pluginCtx });
     }
 
     /** 工作台整页：跨会话浏览/编辑工作区内的文档。 */
@@ -1676,20 +1886,34 @@ window.__ModuleLoader__.load({
       const [selected, setSelected] = React.useState(null);
       const [reloadToken, setReloadToken] = React.useState(0);
 
-      /** 「在对话旁打开画布」按钮 —— 自动开启之外的手动兜底。 */
-      const headerExtra =
-        typeof props?.openBeside !== 'function'
-          ? undefined
-          : () =>
-              h(
-                'button',
-                {
-                  className: 'wcv-btn',
-                  style: { marginLeft: '12px' },
-                  onClick: () => props.openBeside('workbench'),
-                },
-                '在对话旁打开画布',
-              );
+      /** 顶部动作：全部用图标 + 悬浮说明，不放文字按钮。 */
+      const actions = props?.actions ?? {};
+      const headerExtra = () =>
+        h(
+          'span',
+          { className: 'wcv-actionGroup', style: { marginLeft: 'auto' } },
+          iconButton({
+            icon: IconDoc,
+            title: '新建文档（在当前工作区）',
+            onClick: () => void createDocument(),
+          }),
+          iconButton({
+            icon: IconChat,
+            title: '新建会话',
+            onClick: () => actions.newSession?.(),
+          }),
+          iconButton({
+            icon: IconRefresh,
+            title: '刷新文档列表',
+            onClick: () => setReloadToken((n) => n + 1),
+          }),
+          iconButton({
+            icon: IconPlus,
+            title: '在对话旁打开画布',
+            primary: true,
+            onClick: () => actions.openBeside?.('workbench'),
+          }),
+        );
 
       React.useEffect(() => {
         let cancelled = false;
@@ -1717,6 +1941,18 @@ window.__ModuleLoader__.load({
           cancelled = true;
         };
       }, [reloadToken]);
+
+      /** 新建文档要落在哪个工作区：优先当前选中的，其次第一个。 */
+      const targetWorkspace = selected?.workspace ?? index?.workspaces?.[0]?.path ?? null;
+
+      /** 新建文档并立刻切过去。 */
+      const createDocument = async () => {
+        const created = await actions.newDocument?.(targetWorkspace);
+        if (created !== null && created !== undefined) {
+          setSelected({ workspace: created.workspace, docId: created.docId });
+          setReloadToken((n) => n + 1);
+        }
+      };
 
       const pick = (doc) => {
         setSelected({ workspace: doc.workspace, docId: doc.docId });
@@ -1753,17 +1989,28 @@ window.__ModuleLoader__.load({
                           selected !== null && selected.docId === doc.docId && selected.workspace === doc.workspace
                             ? 'true'
                             : 'false',
+                        title: `${doc.title}\n${doc.workspace}\nv${doc.latest} · ${formatTime(doc.updatedAt)}`,
                         onClick: () => pick(doc),
                       },
-                      h('div', null, doc.title),
-                      h('div', { className: 'wcv-docMeta' }, `${doc.workspaceTitle ?? doc.workspace}`),
-                      h('div', { className: 'wcv-docMeta' }, `v${doc.latest} · ${formatTime(doc.updatedAt)}`),
+                      h(IconDoc, { size: 15 }),
+                      h(
+                        'div',
+                        { className: 'wcv-docMain' },
+                        h('div', null, doc.title),
+                        h('div', { className: 'wcv-docMeta' }, `v${doc.latest} · ${formatTime(doc.updatedAt)}`),
+                      ),
                     ),
                   ),
             h(
               'div',
               { className: 'wcv-actions' },
-              h('button', { className: 'wcv-btn', onClick: () => setReloadToken((n) => n + 1) }, '刷新列表'),
+              iconButton({
+                icon: IconPlus,
+                title: '新建文档',
+                primary: true,
+                onClick: () => void createDocument(),
+              }),
+              iconButton({ icon: IconRefresh, title: '刷新列表', onClick: () => setReloadToken((n) => n + 1) }),
             ),
           ),
         );
@@ -1776,7 +2023,7 @@ window.__ModuleLoader__.load({
             'div',
             { className: 'wcv-header' },
             h('div', { className: 'wcv-title' }, '写作工作台'),
-            h('div', { className: 'wcv-sub' }, '选择一个文档开始'),
+            h('div', { className: 'wcv-sub' }, '选择一个文档，或新建一个'),
             headerExtra === undefined ? null : headerExtra(),
           ),
           h(
@@ -1790,6 +2037,7 @@ window.__ModuleLoader__.load({
       }
 
       return h(Canvas, {
+        ctx: pluginCtx,
         key: `${selected.workspace}|${selected.docId}|${reloadToken}`,
         target: { workspace: selected.workspace, docId: selected.docId },
         variant: 'workbench',
@@ -1803,9 +2051,9 @@ window.__ModuleLoader__.load({
      * @param openBeside - 由 apply 提供的打开函数（携带 ctx）。
      * @returns 工作台面板组件。
      */
-    function makeWorkbenchPanel(openBeside) {
+    function makeWorkbenchPanel(actions) {
       return function WorkbenchPanelWithActions(props) {
-        return h(WorkbenchPanel, { ...props, openBeside });
+        return h(WorkbenchPanel, { ...props, actions });
       };
     }
 
@@ -2393,6 +2641,23 @@ window.__ModuleLoader__.load({
      * @param ctx - 浏览器侧 Cordis 上下文。
      */
     function apply(ctx) {
+      // 全局错误上报：客户端出错时宿主看不见，这是唯一能把真实原因带出来的通道。
+      if (window.__dshWritingCanvasErrorHook !== true) {
+        window.__dshWritingCanvasErrorHook = true;
+        window.addEventListener('error', (event) => {
+          report('client:error', {
+            message: String(event.message ?? ''),
+            source: String(event.filename ?? '').split('/').pop(),
+            line: event.lineno ?? null,
+            column: event.colno ?? null,
+          });
+        });
+        window.addEventListener('unhandledrejection', (event) => {
+          report('client:rejection', { reason: describe(event.reason) });
+        });
+      }
+
+      pluginCtx = ctx;
       const disposeStyles = insertStyles();
       const CanvasAutoOpen = makeAutoOpen(ctx);
 
@@ -2565,8 +2830,39 @@ window.__ModuleLoader__.load({
           PanelIcon,
         ),
       );
+      /** 工作台需要的动作：都在这里注入 ctx，面板本身不碰服务。 */
+      const workbenchActions = {
+        openBeside,
+        newDocument: async (workspacePath) => {
+          if (typeof workspacePath !== 'string' || workspacePath === '') {
+            report('doc:new-failed', { reason: 'no-workspace' });
+            return null;
+          }
+          const { ok, data } = await apiPost('/docs/create', { workspace: workspacePath, title: '未命名文档' });
+          if (!ok || data?.ok !== true) {
+            report('doc:new-failed', { reason: data?.error ?? 'unknown' });
+            return null;
+          }
+          report('doc:new', { docId: data.docId });
+          return { workspace: data.workspace, docId: data.docId };
+        },
+        newSession: () => {
+          const uiWorkspace = optionalService(ctx, 'uiWorkspace');
+          if (uiWorkspace === undefined || typeof uiWorkspace.startSession !== 'function') {
+            report('session:new-failed', { reason: 'uiWorkspace-unavailable' });
+            return;
+          }
+          try {
+            uiWorkspace.startSession();
+            report('session:new', {});
+          } catch (error) {
+            report('session:new-failed', { reason: describe(error) });
+          }
+        },
+      };
+
       ctx.slots.inject('main', () =>
-        ctx.slots.register({ name: 'main', key: PANEL_ID }, makeWorkbenchPanel(openBeside)),
+        ctx.slots.register({ name: 'main', key: PANEL_ID }, makeWorkbenchPanel(workbenchActions)),
       );
 
       // 形态 C：插件设置页（含快捷键录制器）。
@@ -2591,5 +2887,6 @@ window.__ModuleLoader__.load({
     return exports;
   },
 });
+
 
 

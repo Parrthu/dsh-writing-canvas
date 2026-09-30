@@ -17,6 +17,7 @@
 import { exportDocx } from './format/docx.js';
 import { getFormatSpec, listFormatSpecs } from './format/specs.js';
 import { docIdOfSession } from './routes.js';
+import { BUILTIN_MARKDOWN_SETS } from './library.js';
 import { getType, listTypes } from './types/registry.js';
 
 /** 把值渲染成给模型看的文本。 */
@@ -66,6 +67,7 @@ export function registerWritingTools({
   storeFor,
   annotationsFor,
   suggestionsFor,
+  libraryFor,
   bus,
 }) {
   /**
@@ -87,6 +89,7 @@ export function registerWritingTools({
       store: storeFor(workspacePath),
       annotations: annotationsFor?.(workspacePath),
       suggestions: suggestionsFor?.(workspacePath),
+      library: libraryFor?.(workspacePath),
     };
   };
 
@@ -381,6 +384,127 @@ export function registerWritingTools({
     },
   });
 
+  // ---------------------------------------------------------------- 格式集（Set）
+  register({
+    name: 'writing_format_set_list',
+    description:
+      '列出当前工作区可用的格式集（Set）。Set 分两种载体：markdown（标题层级、正文体例、分隔线这类写作体例）与 docx（字体、字号、行距、页边距这类版式规格）。',
+    parameters: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'Set id；给定则返回它的完整定义' },
+      },
+      additionalProperties: false,
+    },
+    output: { schema: { type: 'object' }, render: (_args, value) => textOf(value) },
+    async execute(args, exec) {
+      const { library } = await targetOf(exec);
+      const userSets = library === undefined ? [] : await library.listSets();
+      const all = [...BUILTIN_MARKDOWN_SETS.map((x) => ({ ...x, source: 'builtin' })), ...userSets.map((x) => ({ ...x, source: 'user' }))];
+      if (typeof args.id === 'string' && args.id !== '') {
+        const found = all.find((x) => x.id === args.id);
+        if (found === undefined) return { ok: false, message: `没有 id 为 ${args.id} 的格式集。`, available: all.map((x) => x.id) };
+        return { ok: true, set: found };
+      }
+      return {
+        count: all.length,
+        sets: all.map((x) => ({
+          id: x.id,
+          name: x.name,
+          kind: x.kind,
+          source: x.source,
+          description: x.description,
+        })),
+      };
+    },
+  });
+
+  register({
+    name: 'writing_format_set_create',
+    description:
+      '把用户用自然语言描述、或从模板里提取的格式要求，整理成一个可复用的格式集（Set）。' +
+      'Set 会被存在当前工作区，之后一键套用。kind="markdown" 用于不导出 DOCX 的场景（定义标题层级、正文体例、分隔线）；' +
+      'kind="docx" 用于需要指定字体/字号/行距的场景。' +
+      '命名规则：用户给了名字就用用户的；没给就根据描述起一个简短准确的中文名。',
+    parameters: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Set 名称；省略则由你根据描述智能命名' },
+        description: { type: 'string', description: '这个 Set 的用途与要求的简述（会显示给用户）' },
+        kind: { type: 'string', enum: ['markdown', 'docx'], description: '载体：md 体例还是 docx 版式' },
+        definition: {
+          type: 'object',
+          description:
+            'Set 的定义。kind=markdown 时用 { titlePrefix, headingPrefixes[], paragraphSpacing, firstLineIndent, indentChar, rule, listMarker, orderedMarker, quotePrefix }；' +
+            'kind=docx 时用与内置规格相同的结构 { page, title, body, heading1, heading2, heading3, quote, pageNumber }，字体用 fontEastAsia/fontAscii，字号用 sizePt，行距用 lineSpacingPt + lineRule="exact"。',
+        },
+      },
+      required: ['description', 'kind', 'definition'],
+      additionalProperties: false,
+    },
+    output: { schema: { type: 'object' }, render: (_args, value) => textOf(value) },
+    async execute(args, exec) {
+      const { library, workspacePath } = await targetOf(exec);
+      if (library === undefined) return { ok: false, message: '用户库不可用。' };
+      const created = await library.createSet({
+        name: args.name,
+        description: args.description,
+        kind: args.kind,
+        definition: args.definition,
+        createdBy: 'agent',
+      });
+      return {
+        ok: true,
+        set: created,
+        message: `已创建格式集「${created.name}」（${created.kind}），存放在 ${workspacePath}/.writing-canvas/library/format-sets.json，之后可以直接套用。`,
+      };
+    },
+  });
+
+  // ---------------------------------------------------------------- 自定义写作类型
+  register({
+    name: 'writing_type_create',
+    description:
+      '为用户创建一个自定义写作类型（存在当前工作区，不是插件行），适用于内置类型覆盖不到的场景。' +
+      '创建前必须与用户确认：名称、生成前需要确认哪些要素、有哪些硬约束。',
+    parameters: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: '英文短 id（字母数字与短横线），用于内部标识' },
+        label: { type: 'string', description: '中文名称，例如「产品需求文档」' },
+        summary: { type: 'string', description: '一句话说明这个类型是什么' },
+        mustConfirm: { type: 'array', items: { type: 'string' }, description: '生成前必须向用户确认的要素' },
+        constraints: { type: 'array', items: { type: 'string' }, description: '硬约束（越具体越好）' },
+        structure: { type: 'array', items: { type: 'string' }, description: '结构骨架' },
+        checklist: { type: 'array', items: { type: 'string' }, description: '交付前自检清单' },
+        formatKind: { type: 'string', enum: ['markdown', 'docx'], description: '默认载体' },
+      },
+      required: ['id', 'label', 'summary', 'constraints'],
+      additionalProperties: false,
+    },
+    output: { schema: { type: 'object' }, render: (_args, value) => textOf(value) },
+    async execute(args, exec) {
+      const { library } = await targetOf(exec);
+      if (library === undefined) return { ok: false, message: '用户库不可用。' };
+      const record = await library.upsertType({
+        id: args.id,
+        label: args.label,
+        summary: args.summary,
+        constraints: args.constraints,
+        mustConfirm: args.mustConfirm ?? [],
+        structure: args.structure ?? [],
+        checklist: args.checklist ?? [],
+        format: { kind: args.formatKind === 'docx' ? 'docx' : 'markdown' },
+        createdBy: 'agent',
+      });
+      return {
+        ok: true,
+        type: { id: record.id, label: record.label },
+        message: `已创建自定义写作类型「${record.label}」。用户现在可以在画布的类型下拉里选到它。`,
+      };
+    },
+  });
+
   // ---------------------------------------------------------------- 类型清单
   register({
     name: 'writing_type_list',
@@ -395,8 +519,10 @@ export function registerWritingTools({
       schema: { type: 'object' },
       render: (_args, value) => textOf(value),
     },
-    async execute(args) {
-      const types = listTypes();
+    async execute(args, exec) {
+      const { library } = await targetOf(exec);
+      const custom = library === undefined ? [] : await library.listTypes();
+      const types = [...listTypes(), ...custom];
       if (typeof args.id === 'string' && args.id !== '') {
         const type = getType(args.id);
         if (type === undefined) {
@@ -444,12 +570,14 @@ export function registerWritingTools({
       render: (_args, value) => textOf(value),
     },
     async execute(args, exec) {
-      const type = getType(args.typeId);
+      const { library: lib } = await targetOf(exec);
+      const customTypes = lib === undefined ? [] : await lib.listTypes();
+      const type = getType(args.typeId) ?? customTypes.find((item) => item.id === args.typeId);
       if (type === undefined) {
         return {
           ok: false,
           message: `没有 id 为 ${args.typeId} 的写作类型。`,
-          available: listTypes().map((item) => item.id),
+          available: [...listTypes().map((item) => item.id), ...customTypes.map((item) => item.id)],
         };
       }
       if (args.confirmed !== true) {

@@ -19,6 +19,7 @@
 import { AnnotationStore } from './annotations.js';
 import { exportDocx } from './format/docx.js';
 import { getFormatSpec, listFormatSpecs } from './format/specs.js';
+import { BUILTIN_MARKDOWN_SETS, WorkspaceLibrary } from './library.js';
 import { DocumentStore } from './store.js';
 import { SuggestionStore, applySuggestion } from './suggestions.js';
 import { listTypes } from './types/registry.js';
@@ -105,6 +106,7 @@ export function createApiHandler({
   storeFor: sharedStoreFor,
   annotationsFor: sharedAnnotationsFor,
   suggestionsFor: sharedSuggestionsFor,
+  libraryFor: sharedLibraryFor,
   bus,
   logger,
 }) {
@@ -112,6 +114,7 @@ export function createApiHandler({
   const stores = new Map();
   const annotationStores = new Map();
   const suggestionStores = new Map();
+  const libraries = new Map();
 
   /**
    * 浏览器侧诊断上报（内存环形缓冲，最多 50 条）。
@@ -153,6 +156,17 @@ export function createApiHandler({
         suggestionStores.set(workspacePath, store);
       }
       return store;
+    });
+
+  const libraryFor =
+    sharedLibraryFor ??
+    ((workspacePath) => {
+      let library = libraries.get(workspacePath);
+      if (library === undefined) {
+        library = new WorkspaceLibrary(workspacePath, config.stateDir);
+        libraries.set(workspacePath, library);
+      }
+      return library;
     });
 
   /**
@@ -207,6 +221,7 @@ export function createApiHandler({
         sendJson(res, 200, {
           ok: true,
           interactionSelfTest: config.interactionSelfTest === true,
+          workbenchSelfTest: config.workbenchSelfTest === true,
         });
         return;
       }
@@ -238,9 +253,12 @@ export function createApiHandler({
 
       // ---- 写作类型清单（界面左栏用）--------------------------------------
       if (route === '/types' && method === 'GET') {
+        const typesTarget = await resolveTarget(paramsFromUrl(url));
+        const customTypes =
+          typesTarget.error === undefined ? await libraryFor(typesTarget.workspacePath).listTypes() : [];
         sendJson(res, 200, {
           ok: true,
-          types: listTypes().map((type) => ({
+          types: [...listTypes(), ...customTypes].map((type) => ({
             id: type.id,
             label: type.label,
             order: type.order ?? 100,
@@ -250,6 +268,7 @@ export function createApiHandler({
             constraints: type.constraints ?? [],
             structure: type.structure ?? [],
             checklist: type.checklist ?? [],
+            custom: type.custom === true,
           })),
         });
         return;
@@ -265,6 +284,37 @@ export function createApiHandler({
         }
         documents.sort((a, b) => String(b.updatedAt ?? '').localeCompare(String(a.updatedAt ?? '')));
         sendJson(res, 200, { ok: true, workspaces, documents });
+        return;
+      }
+
+      // ---- 新建文档 ------------------------------------------------------
+      if (route === '/docs/create' && method === 'POST') {
+        const body = await readJsonBody(req, 64 * 1024);
+        const target = await resolveTarget(body);
+        if (target.error !== undefined) {
+          sendJson(res, 400, { error: target.error });
+          return;
+        }
+        const docId =
+          typeof body.docId === 'string' && body.docId !== ''
+            ? body.docId
+            : `doc-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+        const store = storeFor(target.workspacePath);
+        // 空白文档允许创建（这是"新建"而不是"覆盖"）。
+        const created = await store.saveDoc(docId, typeof body.content === 'string' ? body.content : '', {
+          source: 'user',
+          note: '新建文档',
+          title: typeof body.title === 'string' && body.title !== '' ? body.title : '未命名文档',
+          allowEmpty: true,
+          force: true,
+        });
+        sendJson(res, 200, {
+          ok: true,
+          docId,
+          workspace: target.workspacePath,
+          meta: created.meta,
+          latest: created.latest,
+        });
         return;
       }
 
@@ -527,6 +577,93 @@ export function createApiHandler({
         }
         bus?.setWriting?.(target.docId, body.active === true, typeof body.note === 'string' ? body.note : '');
         sendJson(res, 200, { ok: true, docId: target.docId, writing: bus?.writingState?.(target.docId) ?? null });
+        return;
+      }
+
+      // ---- 格式集（Set）：内置 Markdown 体例 + 内置 DOCX 规格 + 用户自定义 ----
+      if (route === '/format-sets' && method === 'GET') {
+        const target = await resolveTarget(paramsFromUrl(url));
+        const userSets = target.error === undefined ? await libraryFor(target.workspacePath).listSets() : [];
+        sendJson(res, 200, {
+          ok: true,
+          sets: [
+            ...BUILTIN_MARKDOWN_SETS.map((item) => ({ ...item, source: 'builtin' })),
+            ...listFormatSpecs().map((item) => ({
+              id: item.id,
+              name: item.label,
+              description: `正文 ${item.body.fontEastAsia} ${item.body.sizePt}pt${
+                item.body.lineSpacingPt ? ` · 固定行距 ${item.body.lineSpacingPt}pt` : ''
+              }`,
+              kind: 'docx',
+              builtin: true,
+              source: 'builtin',
+            })),
+            ...userSets.map((item) => ({ ...item, source: 'user' })),
+          ],
+        });
+        return;
+      }
+
+      if (route === '/format-sets/create' && method === 'POST') {
+        const body = await readJsonBody(req, 256 * 1024);
+        const target = await resolveTarget(body);
+        if (target.error !== undefined) {
+          sendJson(res, 400, { error: target.error });
+          return;
+        }
+        const created = await libraryFor(target.workspacePath).createSet({
+          name: body.name,
+          description: body.description,
+          kind: body.kind,
+          definition: body.definition,
+          createdBy: body.createdBy,
+        });
+        sendJson(res, 200, { ok: true, set: created });
+        return;
+      }
+
+      if (route === '/format-sets/update' && method === 'POST') {
+        const body = await readJsonBody(req, 256 * 1024);
+        const target = await resolveTarget(body);
+        if (target.error !== undefined) {
+          sendJson(res, 400, { error: target.error });
+          return;
+        }
+        const updated = await libraryFor(target.workspacePath).updateSet(body.id, {
+          name: body.name,
+          description: body.description,
+          definition: body.definition,
+        });
+        if (updated === null) {
+          sendJson(res, 404, { error: 'set-not-found', id: body.id });
+          return;
+        }
+        sendJson(res, 200, { ok: true, set: updated });
+        return;
+      }
+
+      if (route === '/format-sets/delete' && method === 'POST') {
+        const body = await readJsonBody(req, 64 * 1024);
+        const target = await resolveTarget(body);
+        if (target.error !== undefined) {
+          sendJson(res, 400, { error: target.error });
+          return;
+        }
+        const removed = await libraryFor(target.workspacePath).removeSet(body.id);
+        sendJson(res, 200, { ok: removed });
+        return;
+      }
+
+      // ---- 自定义写作类型 ------------------------------------------------
+      if (route === '/custom-types/delete' && method === 'POST') {
+        const body = await readJsonBody(req, 64 * 1024);
+        const target = await resolveTarget(body);
+        if (target.error !== undefined) {
+          sendJson(res, 400, { error: target.error });
+          return;
+        }
+        const removed = await libraryFor(target.workspacePath).removeType(body.id);
+        sendJson(res, 200, { ok: removed });
         return;
       }
 
