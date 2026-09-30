@@ -13,6 +13,7 @@
  */
 
 import { CONSTRAINTS_SECTION_NAME, TYPES_SECTION_NAME, constraintsText, typesSectionText } from './prompt.js';
+import { createEventBus } from './events.js';
 import { API_PREFIX, createApiHandler } from './routes.js';
 import { createStoreRegistry } from './stores.js';
 import { registerWritingTools } from './tools.js';
@@ -57,7 +58,9 @@ export function apply(ctx, rawConfig) {
   const resolveWorkspacePath = createWorkspaceResolver(ctx);
   const listWorkspaces = createWorkspaceLister(ctx);
   /** 界面与工具共用同一批存储实例，写入串行链才不会各管各的。 */
-  const storeFor = createStoreRegistry(config);
+  const { storeFor, annotationsFor } = createStoreRegistry(config);
+  /** 事件总线：把新版本与「撰写中」实时推给界面。 */
+  const bus = createEventBus();
 
   // 0) 把写作类型注册表挂到 ctx，供**本包之外**的第三方插件注册新类型。
   //    内置类型包走同包模块直接注册，不依赖这一步，所以失败也不影响功能。
@@ -107,7 +110,7 @@ export function apply(ctx, rawConfig) {
     }, 'writing-canvas: 写作类型提示段');
   });
 
-  // 2) 宿主 API：文档读写、不可变版本、还原。
+  // 2) 宿主 API：文档读写、不可变版本、还原、批注、实时事件流。
   ctx.inject(['webServer'], (scoped) => {
     scoped.effect(
       () =>
@@ -119,6 +122,8 @@ export function apply(ctx, rawConfig) {
             resolveWorkspacePath,
             listWorkspaces,
             storeFor,
+            annotationsFor,
+            bus,
             logger: ctx.logger,
           }),
         }),
@@ -126,9 +131,9 @@ export function apply(ctx, rawConfig) {
     );
   });
 
-  // 3) Agent 工具：让模型真正能读写画布、读取写作类型约束。
+  // 3) Agent 工具：让模型真正能读写画布、读写批注、读取写作类型约束。
   ctx.inject(['tools'], (scoped) => {
-    registerWritingTools({ ctx: scoped, resolveWorkspacePath, storeFor });
+    registerWritingTools({ ctx: scoped, resolveWorkspacePath, storeFor, annotationsFor, bus });
   });
 
   ctx.logger.info(

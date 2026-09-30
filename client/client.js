@@ -1263,14 +1263,19 @@ window.__ModuleLoader__.load({
               label: () => '写作画布',
               aliases: ['writing canvas', '写作画布', '写作'],
               defaults: {
-                'desktop:macos': { code: 'KeyW', modifiers: ['primary', 'shift'] },
-                'desktop:windows': { code: 'KeyW', modifiers: ['primary', 'shift'] },
-                'desktop:linux': { code: 'KeyW', modifiers: ['primary', 'shift'] },
-                // Web 端浏览器会先截获两个修饰键的组合，因此再加 alt。
+                // 默认用 ⌘⌥W / Ctrl+Alt+W。
+                //
+                // 为什么不用 ⌘⇧W：它会撞上微信等国内软件的全局热键（用户实测按下去
+                // 唤出的是微信）。⌘⌥W 在国内常用软件里极少被占用，也不是浏览器或
+                // 系统的保留组合。用户仍可在「设置 → 写作插件」里随时改。
+                'desktop:macos': { code: 'KeyW', modifiers: ['primary', 'alt'] },
+                'desktop:windows': { code: 'KeyW', modifiers: ['primary', 'alt'] },
+                'desktop:linux': { code: 'KeyW', modifiers: ['primary', 'alt'] },
+                // Web 端浏览器会先截获部分组合，因此再加一个 shift。
                 // 注意：Web 只有 macOS/Windows 允许 3 个修饰键，Linux 保留受限集合，
                 // 所以 web:linux 故意留空（不绑定），与官方 files / terminal 插件一致。
-                'web:macos': { code: 'KeyW', modifiers: ['primary', 'shift', 'alt'] },
-                'web:windows': { code: 'KeyW', modifiers: ['primary', 'shift', 'alt'] },
+                'web:macos': { code: 'KeyW', modifiers: ['primary', 'alt', 'shift'] },
+                'web:windows': { code: 'KeyW', modifiers: ['primary', 'alt', 'shift'] },
               },
               regions: ['page', 'editable', 'terminal'],
               modals: [],

@@ -53,13 +53,15 @@ function renderTypeDetail(type) {
  * @param options - 依赖。
  * @param options.ctx - Cordis 上下文。
  * @param options.resolveWorkspacePath - 由 sessionId 解析工作区路径。
- * @param options.storeFor - 共享的存储工厂。
+ * @param options.storeFor - 共享的文档存储工厂。
+ * @param options.annotationsFor - 共享的批注存储工厂。
+ * @param options.bus - 事件总线（把「撰写中」与新版本推给界面）。
  */
-export function registerWritingTools({ ctx, resolveWorkspacePath, storeFor }) {
+export function registerWritingTools({ ctx, resolveWorkspacePath, storeFor, annotationsFor, bus }) {
   /**
    * 解析当前工具调用的目标文档。
    * @param exec - 工具执行元信息。
-   * @returns { sessionId, workspacePath, docId, store }
+   * @returns { sessionId, workspacePath, docId, store, annotations }
    */
   const targetOf = async (exec) => {
     const agent = exec?.agent;
@@ -73,6 +75,7 @@ export function registerWritingTools({ ctx, resolveWorkspacePath, storeFor }) {
       workspacePath,
       docId: docIdOfSession(sessionId),
       store: storeFor(workspacePath),
+      annotations: annotationsFor?.(workspacePath),
     };
   };
 
@@ -102,9 +105,12 @@ export function registerWritingTools({ ctx, resolveWorkspacePath, storeFor }) {
       render: (_args, value) => textOf(value),
     },
     async execute(_args, exec) {
-      const { docId, workspacePath, store } = await targetOf(exec);
+      const { docId, workspacePath, store, annotations } = await targetOf(exec);
       const doc = await store.readDoc(docId);
       const versions = await store.listVersions(docId);
+      // 未处理的批注必须让模型看见——这是「用户要你改这里」的唯一传递路径。
+      const allAnnotations = annotations === undefined ? [] : await annotations.list(docId, doc?.latest?.content);
+      const openAnnotations = allAnnotations.filter((item) => item.status === 'open');
       if (doc === null) {
         return {
           exists: false,
@@ -113,6 +119,7 @@ export function registerWritingTools({ ctx, resolveWorkspacePath, storeFor }) {
           content: '',
           hint: '这份文档还不存在。先与用户确认写作类型与要求，再用 writing_canvas_write 写入第一版。',
           versions: [],
+          openAnnotations,
         };
       }
       const type = doc.meta.writingType === undefined ? null : getType(doc.meta.writingType);
@@ -133,6 +140,11 @@ export function registerWritingTools({ ctx, resolveWorkspacePath, storeFor }) {
           note: item.note,
           bytes: item.bytes,
         })),
+        openAnnotations,
+        annotationHint:
+          openAnnotations.length === 0
+            ? null
+            : '有未处理的批注。按硬约束：用户未确认的批注不改变正文——请先逐条与用户确认要如何处理，处理完用 writing_canvas_annotate 把对应批注标记为 resolved。',
       };
     },
   });
@@ -141,16 +153,28 @@ export function registerWritingTools({ ctx, resolveWorkspacePath, storeFor }) {
   register({
     name: 'writing_canvas_write',
     description:
-      '把正文写入当前会话的写作画布，生成一个新的不可变版本。必须先 writing_canvas_read 并把读到的 latestVersion 作为 baseVersion 传入；若用户在此期间改过正文，写入会被拒绝并返回 conflict，此时应重新读取再决定。',
+      '把正文写入当前会话的写作画布，生成一个新的不可变版本。必须先 writing_canvas_read 并把读到的 latestVersion 作为 baseVersion 传入；若用户在此期间改过正文，写入会被拒绝并返回 conflict，此时应重新读取再决定。' +
+      '长篇内容建议分段写：每段用 mode="append" 追加，并让最后一段带 final=true，界面会实时呈现并在收尾时结束「撰写中」提示。',
     parameters: {
       type: 'object',
       properties: {
-        content: { type: 'string', description: '完整正文（整篇替换，不是增量补丁）' },
+        content: { type: 'string', description: '本次写入的正文' },
         baseVersion: {
           type: 'integer',
           description: '本次编辑所基于的版本号，取自 writing_canvas_read 的 latestVersion',
         },
         note: { type: 'string', description: '本次修改的说明，会记入版本历史' },
+        mode: {
+          type: 'string',
+          enum: ['replace', 'append'],
+          description:
+            'replace（默认）整篇替换；append 追加到当前正文末尾（适合分段流式写入，界面会实时呈现）',
+        },
+        final: {
+          type: 'boolean',
+          description:
+            '是否已写完。false 表示后面还有内容，界面会持续显示「撰写中」；默认 true 表示本次写完',
+        },
       },
       required: ['content', 'baseVersion'],
       additionalProperties: false,
@@ -161,12 +185,24 @@ export function registerWritingTools({ ctx, resolveWorkspacePath, storeFor }) {
     },
     async execute(args, exec) {
       const { docId, store } = await targetOf(exec);
-      const saved = await store.saveDoc(docId, args.content, {
+      const isAppend = args.mode === 'append';
+
+      let content = args.content;
+      if (isAppend) {
+        const current = await store.readDoc(docId);
+        const base = current?.latest?.content ?? '';
+        content = base === '' ? content : `${base}\n\n${content}`;
+      }
+
+      const saved = await store.saveDoc(docId, content, {
         source: 'agent',
         note: typeof args.note === 'string' ? args.note : '',
         baseVersion: Number.isInteger(args.baseVersion) ? args.baseVersion : undefined,
       });
+
       if (saved.conflict === true) {
+        // 冲突时同时结束「撰写中」，否则界面会一直转圈。
+        bus?.setWriting?.(docId, false);
         return {
           ok: false,
           conflict: true,
@@ -175,15 +211,24 @@ export function registerWritingTools({ ctx, resolveWorkspacePath, storeFor }) {
           serverContent: saved.latest.content,
         };
       }
+
+      const finished = args.final !== false;
+      bus?.setWriting?.(docId, !finished, typeof args.note === 'string' ? args.note : '');
+      if (!saved.unchanged) {
+        bus?.publishDocChanged?.(docId, { version: saved.latest.n, source: 'agent' });
+      }
+
       return {
         ok: true,
         version: saved.latest.n,
+        mode: isAppend ? 'append' : 'replace',
+        final: finished,
         unchanged: saved.unchanged === true,
         bytes: saved.latest.bytes,
         message:
           saved.unchanged === true
             ? `内容与 v${saved.latest.n} 完全一致，没有生成新版本。`
-            : `已写入 v${saved.latest.n}。`,
+            : `已写入 v${saved.latest.n}${finished ? '（本篇完成）' : '（后续还有内容，界面显示撰写中）'}。`,
       };
     },
   });
@@ -333,6 +378,117 @@ export function registerWritingTools({ ctx, resolveWorkspacePath, storeFor }) {
         format: meta.format,
         message: `已把文档的写作类型设为「${type.label}」。接下来必须遵守该类型的硬约束；完整约束用 writing_type_list(id="${type.id}") 读取。`,
       };
+    },
+  });
+
+  // ---------------------------------------------------------------- 批注
+  register({
+    name: 'writing_canvas_annotate',
+    description:
+      '读写画布批注。用户常在画布里选中一段文字后留下批注（要改写/扩写/删减/润色/提问）。' +
+      '用 action="list" 读取；处理完某条批注后用 action="resolve" 标记为已处理（必须在此前把改动写进正文）；' +
+      '也可以用 action="create" 就某段文字向用户提问。硬约束：用户未确认的批注不改变正文。',
+    parameters: {
+      type: 'object',
+      properties: {
+        action: {
+          type: 'string',
+          enum: ['list', 'create', 'reply', 'resolve', 'dismiss'],
+          description: '要执行的操作',
+        },
+        id: { type: 'string', description: '批注 id（reply / resolve / dismiss 需要）' },
+        quote: { type: 'string', description: '被批注的原文片段（create 需要）' },
+        rangeStart: { type: 'integer', description: '原文起始位置（create 可选）' },
+        rangeEnd: { type: 'integer', description: '原文结束位置（create 可选）' },
+        kind: {
+          type: 'string',
+          enum: ['comment', 'rewrite', 'expand', 'shorten', 'polish', 'continue', 'ask'],
+          description: '批注种类（create 可选，默认 comment）',
+        },
+        instruction: { type: 'string', description: '批注内容/要求（create 需要）' },
+        reply: { type: 'string', description: '追加一条回复（reply 需要）' },
+        resolvedVersion: { type: 'integer', description: 'resolve 时说明是哪一版完成的改动' },
+      },
+      required: ['action'],
+      additionalProperties: false,
+    },
+    output: {
+      schema: { type: 'object' },
+      render: (_args, value) => textOf(value),
+    },
+    async execute(args, exec) {
+      const { docId, store, annotations } = await targetOf(exec);
+      if (annotations === undefined) {
+        return { ok: false, message: '批注存储不可用。' };
+      }
+      const doc = await store.readDoc(docId);
+      const content = doc?.latest?.content ?? '';
+
+      if (args.action === 'list') {
+        const items = await annotations.list(docId, content);
+        return {
+          count: items.length,
+          open: items.filter((item) => item.status === 'open').length,
+          annotations: items,
+        };
+      }
+
+      if (args.action === 'create') {
+        if (typeof args.instruction !== 'string' || args.instruction === '') {
+          return { ok: false, message: 'create 需要 instruction（你想问用户什么）。' };
+        }
+        const quote = typeof args.quote === 'string' ? args.quote : '';
+        let start = Number.isInteger(args.rangeStart) ? args.rangeStart : 0;
+        let end = Number.isInteger(args.rangeEnd) ? args.rangeEnd : 0;
+        if (quote !== '' && (start === 0 || content.slice(start, end) !== quote)) {
+          const found = content.indexOf(quote);
+          if (found !== -1) {
+            start = found;
+            end = found + quote.length;
+          }
+        }
+        const annotation = await annotations.create(docId, {
+          quote,
+          range: { start, end },
+          kind: args.kind,
+          instruction: args.instruction,
+          author: 'agent',
+          anchorVersion: doc?.latest?.n ?? null,
+        });
+        bus?.publishAnnotationsChanged?.(docId, { count: 1 });
+        return { ok: true, annotation, message: '已创建批注，用户会在画布右侧看到它。' };
+      }
+
+      if (typeof args.id !== 'string' || args.id === '') {
+        return { ok: false, message: `${args.action} 需要 id。` };
+      }
+
+      if (args.action === 'reply') {
+        const updated = await annotations.update(docId, args.id, { reply: args.reply, author: 'agent' });
+        if (updated === null) return { ok: false, message: `找不到批注 ${args.id}。` };
+        bus?.publishAnnotationsChanged?.(docId, { count: 1 });
+        return { ok: true, annotation: updated };
+      }
+
+      if (args.action === 'resolve' || args.action === 'dismiss') {
+        const updated = await annotations.update(docId, args.id, {
+          status: args.action === 'resolve' ? 'resolved' : 'dismissed',
+          resolvedVersion: Number.isInteger(args.resolvedVersion) ? args.resolvedVersion : (doc?.latest?.n ?? null),
+          resolutionNote: typeof args.reply === 'string' ? args.reply : '',
+        });
+        if (updated === null) return { ok: false, message: `找不到批注 ${args.id}。` };
+        bus?.publishAnnotationsChanged?.(docId, { count: 1 });
+        return {
+          ok: true,
+          annotation: updated,
+          message:
+            args.action === 'resolve'
+              ? '已标记为已处理。请确认改动确实已经写入正文（用 writing_canvas_write）。'
+              : '已忽略该批注，正文未改动。',
+        };
+      }
+
+      return { ok: false, message: `不支持的 action：${args.action}` };
     },
   });
 }

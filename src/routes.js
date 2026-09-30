@@ -16,6 +16,7 @@
  * @module dsh-writing-canvas/routes
  */
 
+import { AnnotationStore } from './annotations.js';
 import { DocumentStore } from './store.js';
 import { listTypes } from './types/registry.js';
 
@@ -88,13 +89,24 @@ export function docIdOfSession(sessionId) {
  * @param options.config - 已解析配置。
  * @param options.resolveWorkspacePath - 由 sessionId 解析工作区绝对路径。
  * @param options.listWorkspaces - 返回 [{ id, path, title }]，用于校验与总览。
- * @param options.storeFor - 共享的存储工厂；省略时自建（会与工具层分离，仅供测试）。
+ * @param options.storeFor - 共享的文档存储工厂；省略时自建（仅供测试）。
+ * @param options.annotationsFor - 共享的批注存储工厂；省略时自建。
+ * @param options.bus - 事件总线；省略时退化为无推送。
  * @param options.logger - 可选日志器。
  * @returns node:http 风格的 (req, res) 处理器。
  */
-export function createApiHandler({ config, resolveWorkspacePath, listWorkspaces, storeFor: sharedStoreFor, logger }) {
-  /** 同一工作区复用同一个 DocumentStore 实例（写入链才有意义）。 */
+export function createApiHandler({
+  config,
+  resolveWorkspacePath,
+  listWorkspaces,
+  storeFor: sharedStoreFor,
+  annotationsFor: sharedAnnotationsFor,
+  bus,
+  logger,
+}) {
+  /** 同一工作区复用同一个实例（写入链才有意义）。 */
   const stores = new Map();
+  const annotationStores = new Map();
 
   /**
    * 浏览器侧诊断上报（内存环形缓冲，最多 50 条）。
@@ -112,6 +124,17 @@ export function createApiHandler({ config, resolveWorkspacePath, listWorkspaces,
       if (store === undefined) {
         store = new DocumentStore(workspacePath, config.stateDir);
         stores.set(workspacePath, store);
+      }
+      return store;
+    });
+
+  const annotationsFor =
+    sharedAnnotationsFor ??
+    ((workspacePath) => {
+      let store = annotationStores.get(workspacePath);
+      if (store === undefined) {
+        store = new AnnotationStore(workspacePath, config.stateDir);
+        annotationStores.set(workspacePath, store);
       }
       return store;
     });
@@ -136,6 +159,13 @@ export function createApiHandler({ config, resolveWorkspacePath, listWorkspaces,
     return { workspacePath: await resolveWorkspacePath(sessionId), docId: docIdOfSession(sessionId) };
   };
 
+  /** 从 URL 查询串收集寻址参数。 */
+  const paramsFromUrl = (url) => ({
+    sessionId: url.searchParams.get('sessionId') ?? undefined,
+    workspace: url.searchParams.get('workspace') ?? undefined,
+    docId: url.searchParams.get('docId') ?? undefined,
+  });
+
   return async (req, res) => {
     try {
       const url = new URL(req.url ?? '/', 'http://127.0.0.1');
@@ -147,11 +177,37 @@ export function createApiHandler({ config, resolveWorkspacePath, listWorkspaces,
         sendJson(res, 200, {
           ok: true,
           plugin: 'dsh-writing-canvas',
-          phase: 'P1',
+          phase: 'P3',
           release: '0.2.0-rc.2',
           stateDir: config.stateDir,
           constraintsSection: 'writing-canvas:constraints',
+          subscribers: bus?.size?.() ?? 0,
         });
+        return;
+      }
+
+      // ---- 实时事件流（SSE）----------------------------------------------
+      if (route === '/events' && method === 'GET') {
+        const target = await resolveTarget(paramsFromUrl(url));
+        if (target.error !== undefined) {
+          sendJson(res, 400, { error: target.error });
+          return;
+        }
+        if (bus === undefined) {
+          sendJson(res, 501, { error: 'event-bus-unavailable' });
+          return;
+        }
+        res.writeHead(200, {
+          'content-type': 'text/event-stream; charset=utf-8',
+          'cache-control': 'no-store',
+          connection: 'keep-alive',
+          'x-accel-buffering': 'no',
+        });
+        res.write(`data: ${JSON.stringify({ type: 'hello', docId: target.docId })}\n\n`);
+        const unsubscribe = bus.subscribe(target.docId, res);
+        // 连接断开（含页面关闭）时一定要清理，否则订阅者会越积越多。
+        req.on('close', unsubscribe);
+        req.on('error', unsubscribe);
         return;
       }
 
@@ -174,47 +230,12 @@ export function createApiHandler({ config, resolveWorkspacePath, listWorkspaces,
         return;
       }
 
-      // ---- 设定写作类型（界面里用户直接选）--------------------------------
-      if (route === '/doc/type' && method === 'POST') {
-        const body = await readJsonBody(req, 64 * 1024);
-        const target = await resolveTarget(body);
-        if (target.error !== undefined) {
-          sendJson(res, 400, { error: target.error });
-          return;
-        }
-        const wanted = typeof body.typeId === 'string' ? body.typeId : '';
-        const known = listTypes();
-        if (wanted === '') {
-          // 空字符串表示清空类型选择。
-          const store = storeFor(target.workspacePath);
-          await store.setType(target.docId, undefined);
-          sendJson(res, 200, { ok: true, writingType: null });
-          return;
-        }
-        const type = known.find((item) => item.id === wanted);
-        if (type === undefined) {
-          sendJson(res, 400, { error: 'unknown-writing-type', typeId: wanted, available: known.map((t) => t.id) });
-          return;
-        }
-        const store = storeFor(target.workspacePath);
-        const meta = await store.setType(target.docId, type.id);
-        sendJson(res, 200, {
-          ok: true,
-          writingType: type.id,
-          label: type.label,
-          format: meta.format,
-          mustConfirm: type.mustConfirm ?? [],
-        });
-        return;
-      }
-
       // ---- 工作区与文档总览（工作台整页用）--------------------------------
       if (route === '/docs' && method === 'GET') {
         const workspaces = listWorkspaces();
         const documents = [];
         for (const workspace of workspaces) {
-          const store = storeFor(workspace.path);
-          const docs = await store.listDocuments();
+          const docs = await storeFor(workspace.path).listDocuments();
           for (const doc of docs) documents.push({ ...doc, workspaceTitle: workspace.title });
         }
         documents.sort((a, b) => String(b.updatedAt ?? '').localeCompare(String(a.updatedAt ?? '')));
@@ -222,13 +243,9 @@ export function createApiHandler({ config, resolveWorkspacePath, listWorkspaces,
         return;
       }
 
-      // ---- 读取文档 ------------------------------------------------------
+      // ---- 读取文档（含批注与撰写状态）------------------------------------
       if (route === '/doc' && method === 'GET') {
-        const target = await resolveTarget({
-          sessionId: url.searchParams.get('sessionId') ?? undefined,
-          workspace: url.searchParams.get('workspace') ?? undefined,
-          docId: url.searchParams.get('docId') ?? undefined,
-        });
+        const target = await resolveTarget(paramsFromUrl(url));
         if (target.error !== undefined) {
           sendJson(res, 400, { error: target.error });
           return;
@@ -236,6 +253,7 @@ export function createApiHandler({ config, resolveWorkspacePath, listWorkspaces,
         const store = storeFor(target.workspacePath);
         const doc = await store.readDoc(target.docId);
         const versions = doc === null ? [] : await store.listVersions(target.docId);
+        const annotations = await annotationsFor(target.workspacePath).list(target.docId, doc?.latest?.content);
         sendJson(res, 200, {
           exists: doc !== null,
           docId: target.docId,
@@ -243,6 +261,8 @@ export function createApiHandler({ config, resolveWorkspacePath, listWorkspaces,
           meta: doc?.meta ?? null,
           latest: doc?.latest ?? null,
           versions,
+          annotations,
+          writing: bus?.writingState?.(target.docId) ?? { active: false, startedAt: null, note: '' },
         });
         return;
       }
@@ -280,6 +300,13 @@ export function createApiHandler({ config, resolveWorkspacePath, listWorkspaces,
         logger?.info?.(
           `writing-canvas: 保存 ${target.docId} → v${saved.latest.n}${saved.unchanged ? '（内容未变，跳过）' : ''}`,
         );
+        if (saved.unchanged !== true) {
+          bus?.publishDocChanged?.(target.docId, {
+            version: saved.latest.n,
+            source: saved.latest.source,
+            note: saved.latest.note,
+          });
+        }
         sendJson(res, 200, {
           ok: true,
           docId: target.docId,
@@ -287,6 +314,7 @@ export function createApiHandler({ config, resolveWorkspacePath, listWorkspaces,
           meta: saved.meta,
           latest: saved.latest,
           versions: await store.listVersions(target.docId),
+          annotations: await annotationsFor(target.workspacePath).list(target.docId, saved.latest.content),
           unchanged: saved.unchanged === true,
         });
         return;
@@ -294,11 +322,7 @@ export function createApiHandler({ config, resolveWorkspacePath, listWorkspaces,
 
       // ---- 读取单个版本 --------------------------------------------------
       if (route === '/doc/version' && method === 'GET') {
-        const target = await resolveTarget({
-          sessionId: url.searchParams.get('sessionId') ?? undefined,
-          workspace: url.searchParams.get('workspace') ?? undefined,
-          docId: url.searchParams.get('docId') ?? undefined,
-        });
+        const target = await resolveTarget(paramsFromUrl(url));
         if (target.error !== undefined) {
           sendJson(res, 400, { error: target.error });
           return;
@@ -323,6 +347,7 @@ export function createApiHandler({ config, resolveWorkspacePath, listWorkspaces,
         }
         const store = storeFor(target.workspacePath);
         const restored = await store.restoreVersion(target.docId, Number(body.n));
+        bus?.publishDocChanged?.(target.docId, { version: restored.latest.n, source: 'restore' });
         sendJson(res, 200, {
           ok: true,
           docId: target.docId,
@@ -330,7 +355,118 @@ export function createApiHandler({ config, resolveWorkspacePath, listWorkspaces,
           meta: restored.meta,
           latest: restored.latest,
           versions: await store.listVersions(target.docId),
+          annotations: await annotationsFor(target.workspacePath).list(target.docId, restored.latest.content),
         });
+        return;
+      }
+
+      // ---- 设定写作类型（界面里用户直接选）--------------------------------
+      if (route === '/doc/type' && method === 'POST') {
+        const body = await readJsonBody(req, 64 * 1024);
+        const target = await resolveTarget(body);
+        if (target.error !== undefined) {
+          sendJson(res, 400, { error: target.error });
+          return;
+        }
+        const wanted = typeof body.typeId === 'string' ? body.typeId : '';
+        const known = listTypes();
+        if (wanted === '') {
+          await storeFor(target.workspacePath).setType(target.docId, undefined);
+          sendJson(res, 200, { ok: true, writingType: null });
+          return;
+        }
+        const type = known.find((item) => item.id === wanted);
+        if (type === undefined) {
+          sendJson(res, 400, { error: 'unknown-writing-type', typeId: wanted, available: known.map((t) => t.id) });
+          return;
+        }
+        const meta = await storeFor(target.workspacePath).setType(target.docId, type.id);
+        sendJson(res, 200, {
+          ok: true,
+          writingType: type.id,
+          label: type.label,
+          format: meta.format,
+          mustConfirm: type.mustConfirm ?? [],
+        });
+        return;
+      }
+
+      // ---- 批注 ----------------------------------------------------------
+      if (route === '/annotations' && method === 'GET') {
+        const target = await resolveTarget(paramsFromUrl(url));
+        if (target.error !== undefined) {
+          sendJson(res, 400, { error: target.error });
+          return;
+        }
+        const doc = await storeFor(target.workspacePath).readDoc(target.docId);
+        const annotations = await annotationsFor(target.workspacePath).list(target.docId, doc?.latest?.content);
+        sendJson(res, 200, { ok: true, docId: target.docId, annotations });
+        return;
+      }
+
+      if (route === '/annotations' && method === 'POST') {
+        const body = await readJsonBody(req, 256 * 1024);
+        const target = await resolveTarget(body);
+        if (target.error !== undefined) {
+          sendJson(res, 400, { error: target.error });
+          return;
+        }
+        const store = annotationsFor(target.workspacePath);
+        const annotation = await store.create(target.docId, {
+          quote: body.quote,
+          range: body.range,
+          kind: body.kind,
+          instruction: body.instruction,
+          author: body.author,
+          anchorVersion: body.anchorVersion,
+        });
+        const doc = await storeFor(target.workspacePath).readDoc(target.docId);
+        const annotations = await store.list(target.docId, doc?.latest?.content);
+        bus?.publishAnnotationsChanged?.(target.docId, { count: annotations.length });
+        sendJson(res, 200, { ok: true, annotation, annotations });
+        return;
+      }
+
+      if (route === '/annotations/update' && method === 'POST') {
+        const body = await readJsonBody(req, 256 * 1024);
+        const target = await resolveTarget(body);
+        if (target.error !== undefined) {
+          sendJson(res, 400, { error: target.error });
+          return;
+        }
+        const store = annotationsFor(target.workspacePath);
+        const updated = await store.update(target.docId, body.id, {
+          status: body.status,
+          reply: body.reply,
+          author: body.author,
+          instruction: body.instruction,
+          resolvedVersion: body.resolvedVersion,
+          resolutionNote: body.resolutionNote,
+        });
+        if (updated === null) {
+          sendJson(res, 404, { error: 'annotation-not-found', id: body.id });
+          return;
+        }
+        const doc = await storeFor(target.workspacePath).readDoc(target.docId);
+        const annotations = await store.list(target.docId, doc?.latest?.content);
+        bus?.publishAnnotationsChanged?.(target.docId, { count: annotations.length });
+        sendJson(res, 200, { ok: true, annotation: updated, annotations });
+        return;
+      }
+
+      if (route === '/annotations/delete' && method === 'POST') {
+        const body = await readJsonBody(req, 64 * 1024);
+        const target = await resolveTarget(body);
+        if (target.error !== undefined) {
+          sendJson(res, 400, { error: target.error });
+          return;
+        }
+        const store = annotationsFor(target.workspacePath);
+        const removed = await store.remove(target.docId, body.id);
+        const doc = await storeFor(target.workspacePath).readDoc(target.docId);
+        const annotations = await store.list(target.docId, doc?.latest?.content);
+        bus?.publishAnnotationsChanged?.(target.docId, { count: annotations.length });
+        sendJson(res, 200, { ok: removed, annotations });
         return;
       }
 
@@ -357,7 +493,11 @@ export function createApiHandler({ config, resolveWorkspacePath, listWorkspaces,
       sendJson(res, 404, { error: 'not-found', route, method });
     } catch (error) {
       logger?.warn?.(`writing-canvas: API 处理失败 ${String(error)}`);
-      sendJson(res, 500, { error: 'internal-error', message: String(error) });
+      try {
+        sendJson(res, 500, { error: 'internal-error', message: String(error) });
+      } catch {
+        // 响应可能已经开始（例如 SSE），此时不能再写。
+      }
     }
   };
 }
