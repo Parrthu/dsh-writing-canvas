@@ -373,6 +373,12 @@ window.__ModuleLoader__.load({
       /** 界面开关（目前只有开发期交互自检）。 */
       const [uiFlags, setUiFlags] = React.useState({ interactionSelfTest: false });
 
+      // 注意：这两个派生值必须定义在任何引用了它们的 effect **之前**。
+      // 之前放在渲染段里，被 effect 的依赖数组引用，触发暂时性死区（TDZ）
+      // 导致整个画布渲染崩溃——教训：依赖数组是在渲染期求值的。
+      const openCount = annotations.filter((a) => a.status === 'open').length;
+      const pendingSuggestions = suggestions.filter((s) => s.status === 'pending').length;
+
       React.useEffect(() => {
         let cancelled = false;
         apiGet('/ui-flags')
@@ -799,6 +805,16 @@ window.__ModuleLoader__.load({
       }, [baseVersion]);
 
       /**
+       * 有待决定的建议时自动展开抽屉——用户不该错过「AI 想改你的字」这件事。
+       * 只在抽屉当前是收起状态时做一次，不会跟用户的手动操作打架。
+       */
+      React.useEffect(() => {
+        if (pendingSuggestions > 0) {
+          setPaneTab((current) => (current === 'none' ? 'suggestions' : current));
+        }
+      }, [pendingSuggestions]);
+
+      /**
        * 一键套用格式：把当前正文按所选规格生成 DOCX，并展示**回读校验**的真实结果。
        * 校验未通过时如实显示失败项，不谎报成功。
        */
@@ -977,8 +993,6 @@ window.__ModuleLoader__.load({
       const title = doc?.meta?.title ?? (doc?.exists === false ? '未命名文档' : '写作画布');
       const currentTypeId = doc?.meta?.writingType ?? '';
       const currentType = types.find((type) => type.id === currentTypeId);
-      const openCount = annotations.filter((a) => a.status === 'open').length;
-      const pendingSuggestions = suggestions.filter((s) => s.status === 'pending').length;
       /** 当前选用的 DOCX 格式规格：用户显式选择的优先，其次取写作类型的默认规格。 */
       const currentSpecId =
         exportSpec !== '' ? exportSpec : (doc?.meta?.format?.spec ?? specs[0]?.id ?? '');

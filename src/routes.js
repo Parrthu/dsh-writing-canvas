@@ -689,6 +689,23 @@ export function createApiHandler({
         return;
       }
 
+      if (route === '/suggestions/delete' && method === 'POST') {
+        const body = await readJsonBody(req, 64 * 1024);
+        const target = await resolveTarget(body);
+        if (target.error !== undefined) {
+          sendJson(res, 400, { error: target.error });
+          return;
+        }
+        const store = suggestionsFor(target.workspacePath);
+        const removed = await store.remove(target.docId, body.id);
+        const doc = await storeFor(target.workspacePath).readDoc(target.docId);
+        sendJson(res, 200, {
+          ok: removed,
+          suggestions: await store.list(target.docId, doc?.latest?.content),
+        });
+        return;
+      }
+
       // ---- 浏览器侧诊断上报（开发者用）------------------------------------
       if (route === '/client-report' && method === 'POST') {
         const body = await readJsonBody(req, 64 * 1024);
