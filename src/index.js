@@ -13,17 +13,17 @@
  */
 
 import { CONSTRAINTS_SECTION_NAME, constraintsText } from './prompt.js';
+import { API_PREFIX, createApiHandler } from './routes.js';
+import { createWorkspaceLister, createWorkspaceResolver } from './workspace.js';
 
 /** 插件在 Cordis 组合中的条目名。 */
 export const name = 'writing-canvas';
 
-/** 宿主 API 前缀（与 /plugins 的 bundle 路由刻意分开，避免遮蔽客户端 bundle）。 */
-export const API_PREFIX = '/writing-canvas/api';
-
-/** 解析后的运行配置默认值。 */
+/** 配置默认值。 */
 const DEFAULT_CONFIG = {
   stateDir: '.writing-canvas',
   promptSectionOrder: 118,
+  maxDocumentBytes: 4 * 1024 * 1024,
 };
 
 /**
@@ -33,59 +33,14 @@ const DEFAULT_CONFIG = {
  */
 function resolveConfig(raw) {
   const input = raw !== null && typeof raw === 'object' ? raw : {};
+  const positive = (value, fallback) => (Number.isFinite(value) && value > 0 ? value : fallback);
   return {
-    stateDir: typeof input.stateDir === 'string' && input.stateDir !== '' ? input.stateDir : DEFAULT_CONFIG.stateDir,
+    stateDir:
+      typeof input.stateDir === 'string' && input.stateDir !== '' ? input.stateDir : DEFAULT_CONFIG.stateDir,
     promptSectionOrder: Number.isFinite(input.promptSectionOrder)
       ? input.promptSectionOrder
       : DEFAULT_CONFIG.promptSectionOrder,
-  };
-}
-
-/**
- * 写出一个 JSON 响应。
- * @param res - node:http 响应对象。
- * @param status - HTTP 状态码。
- * @param payload - 任意可序列化值。
- */
-function sendJson(res, status, payload) {
-  const body = JSON.stringify(payload, null, 2);
-  res.writeHead(status, {
-    'content-type': 'application/json; charset=utf-8',
-    'cache-control': 'no-store',
-  });
-  res.end(body);
-}
-
-/**
- * 处理写作工作台的宿主 API 请求。
- * @param config - 已解析配置。
- * @returns node:http 风格的 (req, res) 处理器。
- */
-function createApiHandler(config) {
-  return (req, res) => {
-    let pathname;
-    try {
-      pathname = new URL(req.url ?? '/', 'http://127.0.0.1').pathname;
-    } catch {
-      sendJson(res, 400, { error: 'bad-request' });
-      return;
-    }
-
-    const route = pathname.startsWith(API_PREFIX) ? pathname.slice(API_PREFIX.length) : pathname;
-
-    if (route === '/health' || route === '/' || route === '') {
-      sendJson(res, 200, {
-        ok: true,
-        plugin: 'dsh-writing-canvas',
-        phase: 'P0',
-        release: '0.2.0-rc.2',
-        stateDir: config.stateDir,
-        constraintsSection: CONSTRAINTS_SECTION_NAME,
-      });
-      return;
-    }
-
-    sendJson(res, 404, { error: 'not-found', route });
+    maxDocumentBytes: positive(input.maxDocumentBytes, DEFAULT_CONFIG.maxDocumentBytes),
   };
 }
 
@@ -96,6 +51,8 @@ function createApiHandler(config) {
  */
 export function apply(ctx, rawConfig) {
   const config = resolveConfig(rawConfig);
+  const resolveWorkspacePath = createWorkspaceResolver(ctx);
+  const listWorkspaces = createWorkspaceLister(ctx);
 
   // 1) 强指令约束提示段：跨写作类型的通用硬约束。
   ctx.inject(['systemPrompt'], (scoped) => {
@@ -110,14 +67,19 @@ export function apply(ctx, rawConfig) {
     );
   });
 
-  // 2) 宿主 API：供写作工作台界面读写状态。
+  // 2) 宿主 API：文档读写、不可变版本、还原。
   ctx.inject(['webServer'], (scoped) => {
     scoped.effect(
       () =>
         scoped.webServer.register({
           kind: 'prefix',
           path: API_PREFIX,
-          handler: createApiHandler(config),
+          handler: createApiHandler({
+            config,
+            resolveWorkspacePath,
+            listWorkspaces,
+            logger: ctx.logger,
+          }),
         }),
       'writing-canvas: 宿主 API 路由',
     );
@@ -127,3 +89,4 @@ export function apply(ctx, rawConfig) {
     `writing-canvas: 写作插件宿主半体已挂载（API ${API_PREFIX}，状态目录 ${config.stateDir}）`,
   );
 }
+

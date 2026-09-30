@@ -1,0 +1,176 @@
+/**
+ * DocumentStore 的真实行为测试。
+ *
+ * 这些测试不依赖 DSH 运行时，直接用 node:test 跑真实文件系统，覆盖
+ * 「不可变版本 / 内容未变不产生噪音版本 / 冲突拒绝写入 / 还原不改历史」
+ * 这几条最容易写错的规则。
+ *
+ * 运行：node --test test/
+ */
+
+import assert from 'node:assert/strict';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import test from 'node:test';
+
+import { DocumentStore, assertSafeDocId, hashContent } from '../src/store.js';
+
+/** 建一个用完即删的临时工作区。 */
+async function withStore(fn) {
+  const dir = await mkdtemp(join(tmpdir(), 'writing-canvas-test-'));
+  try {
+    await fn(new DocumentStore(dir, '.writing-canvas'), dir);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+test('首次保存生成 v1，且正文与元信息正确', async () => {
+  await withStore(async (store) => {
+    const saved = await store.saveDoc('doc-a', '第一段正文。', { source: 'user', title: '测试文档' });
+    assert.equal(saved.unchanged, false);
+    assert.equal(saved.latest.n, 1);
+    assert.equal(saved.latest.content, '第一段正文。');
+    assert.equal(saved.latest.source, 'user');
+    assert.equal(saved.latest.hash, hashContent('第一段正文。'));
+    assert.equal(saved.meta.title, '测试文档');
+    assert.equal(saved.meta.latest, 1);
+    assert.equal(saved.meta.versionCount, 1);
+  });
+});
+
+test('内容完全一致时不生成新版本（自动保存不会刷成噪音）', async () => {
+  await withStore(async (store) => {
+    await store.saveDoc('doc-a', '同样的内容');
+    const again = await store.saveDoc('doc-a', '同样的内容');
+    assert.equal(again.unchanged, true);
+    assert.equal(again.latest.n, 1);
+    const versions = await store.listVersions('doc-a');
+    assert.equal(versions.length, 1);
+  });
+});
+
+test('每次内容变化都生成新的不可变版本，历史按序保留', async () => {
+  await withStore(async (store) => {
+    await store.saveDoc('doc-a', 'v1 内容');
+    await store.saveDoc('doc-a', 'v2 内容');
+    await store.saveDoc('doc-a', 'v3 内容');
+
+    const versions = await store.listVersions('doc-a');
+    assert.deepEqual(
+      versions.map((v) => v.n),
+      [1, 2, 3],
+    );
+
+    // 历史版本只读且内容未被覆盖。
+    assert.equal((await store.readVersion('doc-a', 1)).content, 'v1 内容');
+    assert.equal((await store.readVersion('doc-a', 2)).content, 'v2 内容');
+    assert.equal((await store.readVersion('doc-a', 3)).content, 'v3 内容');
+  });
+});
+
+test('基于过期版本的保存被拒绝，且不写入任何内容（冲突保护）', async () => {
+  await withStore(async (store) => {
+    await store.saveDoc('doc-a', '用户版本'); // v1
+    await store.saveDoc('doc-a', 'AI 写入的版本', { source: 'agent' }); // v2
+
+    // 客户端仍以为自己在 v1 上编辑。
+    const result = await store.saveDoc('doc-a', '用户基于 v1 的编辑', { baseVersion: 1 });
+    assert.equal(result.conflict, true);
+    assert.equal(result.latest.n, 2);
+    assert.equal(result.latest.content, 'AI 写入的版本');
+
+    // 关键：冲突时绝不能落盘。
+    const versions = await store.listVersions('doc-a');
+    assert.equal(versions.length, 2);
+    assert.equal((await store.readDoc('doc-a')).latest.content, 'AI 写入的版本');
+  });
+});
+
+test('用户明确选择覆盖时才写入（force）', async () => {
+  await withStore(async (store) => {
+    await store.saveDoc('doc-a', '用户版本');
+    await store.saveDoc('doc-a', 'AI 写入的版本', { source: 'agent' });
+
+    const forced = await store.saveDoc('doc-a', '用户决定覆盖的内容', { baseVersion: 1, force: true });
+    assert.equal(forced.conflict, undefined);
+    assert.equal(forced.latest.n, 3);
+    assert.equal(forced.latest.content, '用户决定覆盖的内容');
+
+    // 被覆盖的 AI 版本仍然完好在历史里，没有丢失。
+    assert.equal((await store.readVersion('doc-a', 2)).content, 'AI 写入的版本');
+  });
+});
+
+test('还原是把历史内容写成新版本，历史本身不被破坏', async () => {
+  await withStore(async (store) => {
+    await store.saveDoc('doc-a', '最初的内容');
+    await store.saveDoc('doc-a', '改写后的内容');
+
+    const restored = await store.restoreVersion('doc-a', 1);
+    assert.equal(restored.latest.n, 3);
+    assert.equal(restored.latest.content, '最初的内容');
+    assert.equal(restored.latest.source, 'restore');
+
+    const versions = await store.listVersions('doc-a');
+    assert.deepEqual(
+      versions.map((v) => v.n),
+      [1, 2, 3],
+    );
+    assert.equal((await store.readVersion('doc-a', 2)).content, '改写后的内容');
+  });
+});
+
+test('并发保存不会写坏版本索引', async () => {
+  await withStore(async (store) => {
+    await Promise.all(
+      Array.from({ length: 12 }, (_, index) => store.saveDoc('doc-a', `并发内容 ${index}`)),
+    );
+    const versions = await store.listVersions('doc-a');
+    assert.equal(versions.length, 12);
+    assert.deepEqual(
+      versions.map((v) => v.n),
+      Array.from({ length: 12 }, (_, index) => index + 1),
+    );
+    const doc = await store.readDoc('doc-a');
+    assert.equal(doc.meta.versionCount, 12);
+  });
+});
+
+test('不同文档互不干扰，listDocuments 按更新时间倒序', async () => {
+  await withStore(async (store) => {
+    await store.saveDoc('doc-a', 'A');
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await store.saveDoc('doc-b', 'B');
+
+    const docs = await store.listDocuments();
+    assert.equal(docs.length, 2);
+    assert.equal(docs[0].docId, 'doc-b');
+    assert.equal(docs[1].docId, 'doc-a');
+  });
+});
+
+test('未写入过的文档读取返回 null', async () => {
+  await withStore(async (store) => {
+    assert.equal(await store.readDoc('nope'), null);
+    assert.deepEqual(await store.listVersions('nope'), []);
+    assert.equal(await store.readVersion('nope', 1), null);
+  });
+});
+
+test('落盘的是真实 JSON 文件，且拒绝路径穿越', async () => {
+  await withStore(async (store, dir) => {
+    await store.saveDoc('doc-a', '内容');
+    const meta = JSON.parse(
+      await readFile(join(dir, '.writing-canvas', 'docs', 'doc-a', 'meta.json'), 'utf8'),
+    );
+    assert.equal(meta.docId, 'doc-a');
+    assert.equal(meta.latest, 1);
+
+    assert.throws(() => assertSafeDocId('../escape'));
+    assert.throws(() => assertSafeDocId('a/b'));
+    assert.throws(() => assertSafeDocId(''));
+    assert.equal(assertSafeDocId('s-session-1234_ab.c'), 's-session-1234_ab.c');
+  });
+});

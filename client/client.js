@@ -2,19 +2,24 @@
  * dsh-writing-canvas · 客户端半体（Browser half）· Release 0.2.0-rc.2
  *
  * 这是一个**零构建**的客户端 bundle：宿主 dsh-client-modules 直接读取
- * package.json 的 exports["./client"] 并把本文件作为该包的浏览器半体提供
- * （路由 /plugins/dsh-writing-canvas/client.js）。文件本身就是产物。
+ * package.json 的 exports["./client"] 并把本文件作为该包的浏览器半体提供。
+ * 文件本身就是产物。
  *
- * 因此本文件不写 import，而是使用宿主提供的 __ModuleLoader__ 工厂协议；
- * 可 require 的模块仅限 Release 0.2.0-rc.2 的平台基线表：
+ * 因此不写 import，而使用宿主提供的 __ModuleLoader__ 工厂协议。可 require 的
+ * 模块仅限 Release 0.2.0-rc.2 的平台基线表：
  *   react · react/jsx-runtime · react-dom · react-dom/client
  *   @deepseek-ai/cordis · dsh-client-store · dsh-client-ui-slots
  *   dsh-client-ui-primitives · dsh-client-ui-dockkit
  *
- * 界面入口（官方契约）：
- *   - sidebar.panellist 列表：放 { id, order, label } + 图标组件
- *   - main 键控槽：用**同一个 id** 注册整页组件
- * 二者配对后，侧边栏点击该 id 即切换到我们的整页界面。
+ * 同一份 Canvas 以两种形态存在：
+ *   形态 A · 对话旁常驻画布
+ *     - 标签页类型注册进 ctx.sidebarRightTabs（kind = writing-canvas）
+ *     - body 注册进 sidebar.right.pane.tab
+ *     - keepMounted: true → 官方语义是「跨标签页/会话切换、折叠、停靠都保留 body」
+ *     - 每个会话一份文档，所以它天然跟着对话流走
+ *   形态 B · 工作台整页
+ *     - sidebar.panellist 入口 + main 键 writing-canvas 整页
+ *     - 跨会话浏览/编辑工作区内的文档
  *
  * @module dsh-writing-canvas/client
  */
@@ -25,121 +30,88 @@ window.__ModuleLoader__.load({
     const React = require('react');
     const h = React.createElement;
 
-    /** 面板 id：sidebar.panellist 与 main 必须使用同一个 id 才能配对。 */
+    /** 工作台整页面板的 id：sidebar.panellist 与 main 必须使用同一个 id。 */
     const PANEL_ID = 'writing-canvas';
-
-    /** 宿主 API 前缀，与 src/index.js 的 API_PREFIX 保持一致。 */
+    /** 右栏标签页的 kind（按 kind 打开）与注册 id。 */
+    const CANVAS_KIND = 'writing-canvas';
+    const CANVAS_TAB_ID = 'dsh-writing-canvas';
+    /** 宿主 API 前缀，与 src/routes.js 的 API_PREFIX 一致。 */
     const API_BASE = '/writing-canvas/api';
+    /** 停止输入后多久自动保存。 */
+    const AUTOSAVE_DELAY_MS = 1200;
+    /** 自动开启记录在 localStorage 的前缀：只尝试一次，用户关掉就不再打扰。 */
+    const AUTOOPEN_KEY_PREFIX = 'dsh-writing-canvas:autoopen:';
+    /** 工作台当前选中文档的记忆键。 */
+    const WORKBENCH_SELECTION_KEY = 'dsh-writing-canvas:workbench-doc';
 
-    /** P0 阶段界面用到的样式（全部走当前 Release 的主题 token）。 */
     const CSS = `
-.wcv-root {
-  box-sizing: border-box;
-  display: flex;
-  flex-direction: column;
-  width: 100%;
-  height: 100%;
-  min-height: 0;
-  padding-top: var(--dsh-frame-top-clearance, 48px);
-  background: var(--dsw-alias-bg-base, #ffffff);
-  color: var(--dsw-alias-label-primary, #1a1a1a);
-  font-size: 14px;
-}
-.wcv-header {
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-  padding: 14px 20px 12px;
-  border-bottom: 1px solid var(--dsw-alias-border-l1, rgba(128,128,128,0.28));
-}
-.wcv-title { font-size: 17px; font-weight: 700; }
-.wcv-sub { font-size: 12px; color: var(--dsw-alias-label-secondary, #6b6b6b); }
-.wcv-pill {
-  margin-left: auto;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 3px 9px;
-  border-radius: 999px;
-  border: 1px solid var(--dsw-alias-border-l1, rgba(128,128,128,0.28));
-  font-size: 12px;
-  color: var(--dsw-alias-label-secondary, #6b6b6b);
-}
+.wcv-root { box-sizing: border-box; display: flex; flex-direction: column; width: 100%; height: 100%;
+  min-height: 0; background: var(--dsw-alias-bg-base, #fff); color: var(--dsw-alias-label-primary, #1a1a1a);
+  font-size: 14px; }
+.wcv-root--workbench { padding-top: var(--dsh-frame-top-clearance, 48px); }
+.wcv-header { display: flex; align-items: baseline; gap: 10px; padding: 12px 16px 10px;
+  border-bottom: 1px solid var(--dsw-alias-border-l1, rgba(128,128,128,0.28)); flex: none; }
+.wcv-root--pane .wcv-header { padding: 8px 12px; }
+.wcv-title { font-size: 15px; font-weight: 700; }
+.wcv-sub { font-size: 12px; color: var(--dsw-alias-label-secondary, #6b6b6b); min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wcv-pill { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px;
+  border-radius: 999px; border: 1px solid var(--dsw-alias-border-l1, rgba(128,128,128,0.28));
+  font-size: 12px; color: var(--dsw-alias-label-secondary, #6b6b6b); flex: none; }
 .wcv-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--dsw-alias-state-idle-primary, #9aa0a6); }
 .wcv-dot[data-state="ok"] { background: var(--dsw-alias-state-success-primary, #1a9c53); }
+.wcv-dot[data-state="busy"] { background: var(--dsw-alias-state-warn-primary, #d9822b); }
 .wcv-dot[data-state="error"] { background: var(--dsw-alias-state-error-primary, #d93025); }
-.wcv-body {
-  flex: 1;
-  min-height: 0;
-  display: grid;
-  grid-template-columns: 216px minmax(0, 1fr) 260px;
-}
+.wcv-body { flex: 1; min-height: 0; display: grid; grid-template-columns: 232px minmax(0, 1fr) 248px; }
+.wcv-root--pane .wcv-body { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
 .wcv-col { min-height: 0; display: flex; flex-direction: column; }
 .wcv-col + .wcv-col { border-left: 1px solid var(--dsw-alias-border-l1, rgba(128,128,128,0.28)); }
-.wcv-colHead {
-  padding: 10px 14px 6px;
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--dsw-alias-label-secondary, #6b6b6b);
-  letter-spacing: 0.3px;
-}
-.wcv-colBody { flex: 1; min-height: 0; overflow: auto; padding: 0 12px 14px; }
-.wcv-type {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 7px 9px;
-  border-radius: 7px;
-  font-size: 13px;
-  color: var(--dsw-alias-label-secondary, #6b6b6b);
-}
-.wcv-type[data-active="true"] {
-  background: var(--dsw-alias-bg-layer-2, rgba(128,128,128,0.12));
-  color: var(--dsw-alias-label-primary, #1a1a1a);
-  font-weight: 600;
-}
-.wcv-tag {
-  margin-left: auto;
-  font-size: 10px;
-  padding: 1px 6px;
-  border-radius: 999px;
-  border: 1px solid var(--dsw-alias-border-l1, rgba(128,128,128,0.28));
-}
-.wcv-canvasWrap { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 0 16px 14px; }
-.wcv-note {
-  margin: 0 16px 10px;
-  padding: 8px 11px;
-  border-radius: 8px;
-  font-size: 12px;
-  line-height: 1.6;
-  color: var(--dsw-alias-label-secondary, #6b6b6b);
-  background: var(--dsw-alias-bg-layer-1, rgba(128,128,128,0.07));
-  border: 1px solid var(--dsw-alias-border-l1, rgba(128,128,128,0.22));
-}
-.wcv-editor {
-  flex: 1;
-  min-height: 0;
-  width: 100%;
-  box-sizing: border-box;
-  resize: none;
-  padding: 18px 20px;
-  border-radius: 10px;
-  border: 1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.4));
-  background: var(--dsw-alias-bg-layer-1, rgba(128,128,128,0.05));
-  color: inherit;
-  font-family: inherit;
-  font-size: 15px;
-  line-height: 1.85;
-  outline: none;
-}
+.wcv-root--pane .wcv-col + .wcv-col { border-left: none; }
+.wcv-colHead { padding: 9px 12px 5px; font-size: 11.5px; font-weight: 600; letter-spacing: 0.3px;
+  color: var(--dsw-alias-label-secondary, #6b6b6b); flex: none; }
+.wcv-colBody { flex: 1; min-height: 0; overflow: auto; padding: 0 10px 12px; }
+.wcv-docRow { display: flex; flex-direction: column; gap: 2px; padding: 7px 9px; border-radius: 7px;
+  cursor: pointer; font-size: 13px; }
+.wcv-docRow:hover { background: var(--dsw-alias-bg-layer-2, rgba(128,128,128,0.10)); }
+.wcv-docRow[data-active="true"] { background: var(--dsw-alias-bg-layer-2, rgba(128,128,128,0.14)); font-weight: 600; }
+.wcv-docMeta { font-size: 11px; color: var(--dsw-alias-label-secondary, #6b6b6b); font-weight: 400;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wcv-canvasWrap { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 0 14px 10px; }
+.wcv-root--pane .wcv-canvasWrap { padding: 0 10px 8px; }
+.wcv-editor { flex: 1; min-height: 0; width: 100%; box-sizing: border-box; resize: none; padding: 16px 18px;
+  border-radius: 10px; border: 1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.4));
+  background: var(--dsw-alias-bg-layer-1, rgba(128,128,128,0.05)); color: inherit; font-family: inherit;
+  font-size: 15px; line-height: 1.85; outline: none; }
+.wcv-root--pane .wcv-editor { font-size: 14px; padding: 12px 14px; }
 .wcv-editor:focus { border-color: var(--dsw-alias-brand-primary, #4d6bfe); }
-.wcv-empty { padding: 10px 2px; font-size: 12.5px; line-height: 1.8; color: var(--dsw-alias-label-secondary, #6b6b6b); }
-.wcv-kv { display: flex; gap: 8px; font-size: 12px; padding: 3px 0; }
-.wcv-kv > span:first-child { color: var(--dsw-alias-label-secondary, #6b6b6b); min-width: 92px; }
-.wcv-kv > span:last-child { word-break: break-all; }
+.wcv-banner { margin: 0 14px 8px; padding: 8px 11px; border-radius: 8px; font-size: 12px; line-height: 1.6;
+  border: 1px solid var(--dsw-alias-border-l1, rgba(128,128,128,0.24));
+  background: var(--dsw-alias-bg-layer-1, rgba(128,128,128,0.07)); color: var(--dsw-alias-label-secondary, #6b6b6b); }
+.wcv-banner--warn { border-color: var(--dsw-alias-state-warn-primary, #d9822b); color: var(--dsw-alias-label-primary, #1a1a1a); }
+.wcv-banner--error { border-color: var(--dsw-alias-state-error-primary, #d93025); color: var(--dsw-alias-state-error-primary, #d93025); }
+.wcv-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 7px; }
+.wcv-btn { font: inherit; font-size: 12px; padding: 3px 10px; border-radius: 6px; cursor: pointer;
+  border: 1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.4));
+  background: var(--dsw-alias-bg-layer-1, rgba(128,128,128,0.06)); color: inherit; }
+.wcv-btn:hover { border-color: var(--dsw-alias-brand-primary, #4d6bfe); }
+.wcv-btn--primary { border-color: var(--dsw-alias-brand-primary, #4d6bfe);
+  background: var(--dsw-alias-brand-primary, #4d6bfe); color: #fff; }
+.wcv-ver { display: flex; flex-direction: column; gap: 1px; padding: 6px 8px; border-radius: 7px; cursor: pointer; }
+.wcv-ver:hover { background: var(--dsw-alias-bg-layer-2, rgba(128,128,128,0.10)); }
+.wcv-ver[data-active="true"] { background: var(--dsw-alias-bg-layer-2, rgba(128,128,128,0.14)); }
+.wcv-verTop { display: flex; align-items: baseline; gap: 6px; font-size: 12.5px; font-weight: 600; }
+.wcv-verMeta { font-size: 11px; color: var(--dsw-alias-label-secondary, #6b6b6b); }
+.wcv-preview { margin: 6px 0 0; padding: 8px 10px; border-radius: 7px; font-size: 12px; line-height: 1.7;
+  white-space: pre-wrap; word-break: break-word; max-height: 240px; overflow: auto;
+  background: var(--dsw-alias-bg-layer-1, rgba(128,128,128,0.07));
+  border: 1px solid var(--dsw-alias-border-l1, rgba(128,128,128,0.2)); }
+.wcv-empty { padding: 8px 2px; font-size: 12.5px; line-height: 1.8; color: var(--dsw-alias-label-secondary, #6b6b6b); }
+.wcv-foot { flex: none; display: flex; gap: 10px; align-items: center; padding: 6px 14px;
+  border-top: 1px solid var(--dsw-alias-border-l1, rgba(128,128,128,0.28));
+  font-size: 11.5px; color: var(--dsw-alias-label-secondary, #6b6b6b); }
 `;
 
-    /** 注入样式（模块体副作用，仅在 bundle 首次 materialize 时执行）。 */
+    /** 注入样式（模块体副作用，仅在 bundle 首次 materialize 时执行一次）。 */
     function insertStyles() {
       if (document.querySelector('style[data-dsh-writing-canvas]') !== null) return () => {};
       const el = document.createElement('style');
@@ -149,10 +121,380 @@ window.__ModuleLoader__.load({
       return () => el.remove();
     }
 
+    /** 把目标拼成查询串（要么按会话，要么按工作区+文档）。 */
+    function targetQuery(target) {
+      const params = new URLSearchParams();
+      if (typeof target.sessionId === 'string' && target.sessionId !== '') {
+        params.set('sessionId', target.sessionId);
+      } else {
+        if (typeof target.workspace === 'string') params.set('workspace', target.workspace);
+        if (typeof target.docId === 'string') params.set('docId', target.docId);
+      }
+      return params;
+    }
+
+    /** 把目标拼成请求体字段。 */
+    function targetBody(target) {
+      if (typeof target.sessionId === 'string' && target.sessionId !== '') return { sessionId: target.sessionId };
+      return { workspace: target.workspace, docId: target.docId };
+    }
+
+    /** GET 一个 JSON 接口；HTTP 错误也解析为数据返回，交由调用方判断。 */
+    async function apiGet(path, params) {
+      const query = params instanceof URLSearchParams ? `?${params.toString()}` : '';
+      const response = await fetch(`${API_BASE}${path}${query}`, { headers: { accept: 'application/json' } });
+      const data = await response.json().catch(() => null);
+      return { status: response.status, ok: response.ok, data };
+    }
+
+    /** POST 一个 JSON 接口。 */
+    async function apiPost(path, body) {
+      const response = await fetch(`${API_BASE}${path}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = await response.json().catch(() => null);
+      return { status: response.status, ok: response.ok, data };
+    }
+
+    /** 人类可读的时间。 */
+    function formatTime(iso) {
+      if (typeof iso !== 'string' || iso === '') return '';
+      const date = new Date(iso);
+      if (Number.isNaN(date.getTime())) return iso;
+      const pad = (n) => String(n).padStart(2, '0');
+      return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+    }
+
+    /** 版本来源标签。 */
+    function sourceLabel(source) {
+      if (source === 'agent') return 'AI';
+      if (source === 'restore') return '还原';
+      return '我';
+    }
+
+    /**
+     * Canvas：正文编辑 + 自动保存 + 不可变版本历史 + 还原。
+     *
+     * 冲突策略（对应硬约束第 9 条）：保存时带上 baseVersion，若服务端已前进，
+     * 宿主**拒绝写入**并返回 409；界面明确询问用户，绝不静默覆盖。
+     *
+     * @param props.target - { sessionId } 或 { workspace, docId }。
+     * @param props.variant - 'pane'（对话旁）| 'workbench'（整页）。
+     */
+    function Canvas(props) {
+      const target = props.target;
+      const variant = props.variant ?? 'pane';
+      const targetKey = JSON.stringify(target);
+
+      const [doc, setDoc] = React.useState(null);
+      const [text, setText] = React.useState('');
+      const [baseVersion, setBaseVersion] = React.useState(0);
+      const [status, setStatus] = React.useState('loading');
+      const [message, setMessage] = React.useState(null);
+      const [conflict, setConflict] = React.useState(null);
+      const [viewing, setViewing] = React.useState(null);
+
+      // 自动保存需要读到最新的输入，用 ref 避免把 effect 绑到 text 上反复重跑。
+      const textRef = React.useRef('');
+      textRef.current = text;
+      const baseVersionRef = React.useRef(0);
+      baseVersionRef.current = baseVersion;
+      const dirtyRef = React.useRef(false);
+      const savingRef = React.useRef(false);
+
+      /** 用服务端返回的结果刷新本地状态。 */
+      const applyServer = React.useCallback((data) => {
+        setDoc({
+          exists: data.exists !== false,
+          docId: data.docId,
+          workspace: data.workspace,
+          meta: data.meta,
+          latest: data.latest,
+          versions: data.versions ?? [],
+        });
+        if (data.latest !== null && data.latest !== undefined) {
+          setBaseVersion(data.latest.n);
+          baseVersionRef.current = data.latest.n;
+        }
+      }, []);
+
+      // ---- 载入 ----------------------------------------------------------
+      React.useEffect(() => {
+        let cancelled = false;
+        setStatus('loading');
+        setMessage(null);
+        setConflict(null);
+        setViewing(null);
+        apiGet('/doc', targetQuery(target))
+          .then(({ ok, data }) => {
+            if (cancelled) return;
+            if (!ok) throw new Error(data?.message ?? data?.error ?? '读取失败');
+            applyServer(data);
+            setText(data.latest?.content ?? '');
+            dirtyRef.current = false;
+            setStatus('ready');
+          })
+          .catch((error) => {
+            if (cancelled) return;
+            setStatus('error');
+            setMessage(`读取文档失败：${String(error)}`);
+          });
+        return () => {
+          cancelled = true;
+        };
+      }, [targetKey, applyServer]);
+
+      // ---- 保存 ----------------------------------------------------------
+      const save = React.useCallback(
+        async (options = {}) => {
+          if (savingRef.current) return;
+          savingRef.current = true;
+          setStatus('saving');
+          try {
+            const { status: httpStatus, data } = await apiPost('/doc', {
+              ...targetBody(target),
+              content: textRef.current,
+              baseVersion: baseVersionRef.current,
+              source: options.source ?? 'user',
+              note: options.note ?? '',
+              force: options.force === true,
+            });
+
+            if (httpStatus === 409 && data?.conflict === true) {
+              setConflict({ latest: data.latest, versions: data.versions ?? [], meta: data.meta });
+              setDoc((current) => (current === null ? current : { ...current, versions: data.versions ?? current.versions }));
+              setMessage(`服务端已更新到 v${data.latest.n}，你的编辑基于 v${baseVersionRef.current}。`);
+              setStatus('ready');
+              return;
+            }
+            if (!data || data.ok !== true) {
+              throw new Error(data?.message ?? data?.error ?? `HTTP ${httpStatus}`);
+            }
+            applyServer({ ...data, exists: true });
+            setConflict(null);
+            dirtyRef.current = false;
+            setMessage(data.unchanged === true ? '内容未变化，未生成新版本。' : `已保存为 v${data.latest.n}。`);
+            setStatus('ready');
+          } catch (error) {
+            setStatus('error');
+            setMessage(`保存失败：${String(error)}`);
+          } finally {
+            savingRef.current = false;
+          }
+        },
+        [targetKey, applyServer],
+      );
+
+      // ---- 自动保存（停止输入后）------------------------------------------
+      React.useEffect(() => {
+        if (status !== 'dirty') return undefined;
+        const timer = setTimeout(() => {
+          void save();
+        }, AUTOSAVE_DELAY_MS);
+        return () => clearTimeout(timer);
+      }, [text, status, save]);
+
+      /** 输入处理：内容变了才标记为待保存。 */
+      const onChange = (event) => {
+        const next = event.target.value;
+        setText(next);
+        const latestContent = doc?.latest?.content ?? '';
+        if (next !== latestContent) {
+          dirtyRef.current = true;
+          setStatus('dirty');
+        } else {
+          dirtyRef.current = false;
+          setStatus('ready');
+        }
+      };
+
+      // ---- 还原 ----------------------------------------------------------
+      const restore = async (n) => {
+        setStatus('saving');
+        try {
+          const { ok, data } = await apiPost('/doc/restore', { ...targetBody(target), n });
+          if (!ok || data?.ok !== true) throw new Error(data?.message ?? data?.error ?? '还原失败');
+          applyServer({ ...data, exists: true });
+          setText(data.latest.content);
+          setViewing(null);
+          setConflict(null);
+          setMessage(`已还原 v${n}，并记为 v${data.latest.n}（历史保持完整）。`);
+          setStatus('ready');
+        } catch (error) {
+          setStatus('error');
+          setMessage(`还原失败：${String(error)}`);
+        }
+      };
+
+      // ---- 渲染 ----------------------------------------------------------
+      const state = status === 'error' ? 'error' : status === 'saving' ? 'busy' : status === 'dirty' ? 'busy' : 'ok';
+      const stateText =
+        status === 'loading'
+          ? '读取中…'
+          : status === 'saving'
+            ? '保存中…'
+            : status === 'dirty'
+              ? '未保存'
+              : status === 'error'
+                ? '出错'
+                : doc?.exists === false
+                  ? '新文档'
+                  : `v${baseVersion}`;
+
+      const versions = doc?.versions ?? [];
+      const title = doc?.meta?.title ?? (doc?.exists === false ? '未命名文档' : '写作画布');
+
+      return h(
+        'div',
+        { className: `wcv-root wcv-root--${variant}` },
+        h(
+          'div',
+          { className: 'wcv-header' },
+          h('div', { className: 'wcv-title' }, variant === 'pane' ? '写作画布' : '写作工作台'),
+          h('div', { className: 'wcv-sub' }, variant === 'pane' ? title : `${title} · ${doc?.workspace ?? ''}`),
+          h('div', { className: 'wcv-pill' }, h('span', { className: 'wcv-dot', 'data-state': state }), stateText),
+        ),
+
+        conflict !== null
+          ? h(
+              'div',
+              { className: 'wcv-banner wcv-banner--warn' },
+              `冲突：服务端已经是 v${conflict.latest?.n}，你的编辑基于 v${baseVersion}。`,
+              h(
+                'div',
+                null,
+                '为避免静默覆盖，宿主拒绝写入。请选择：',
+              ),
+              h(
+                'div',
+                { className: 'wcv-actions' },
+                h(
+                  'button',
+                  {
+                    className: 'wcv-btn wcv-btn--primary',
+                    onClick: () => void save({ force: true, note: '用户选择覆盖服务端新版本' }),
+                  },
+                  '用我的版本覆盖',
+                ),
+                h(
+                  'button',
+                  {
+                    className: 'wcv-btn',
+                    onClick: () => {
+                      setText(conflict.latest?.content ?? '');
+                      setBaseVersion(conflict.latest?.n ?? 0);
+                      baseVersionRef.current = conflict.latest?.n ?? 0;
+                      setConflict(null);
+                      setMessage('已载入服务端最新版本，你的本地修改已丢弃。');
+                      setStatus('ready');
+                    },
+                  },
+                  '放弃我的修改',
+                ),
+              ),
+            )
+          : null,
+
+        message !== null
+          ? h('div', { className: `wcv-banner${status === 'error' ? ' wcv-banner--error' : ''}` }, message)
+          : null,
+
+        h(
+          'div',
+          { className: 'wcv-body' },
+          variant === 'workbench' && props.renderDocs !== undefined ? props.renderDocs() : null,
+
+          h(
+            'div',
+            { className: 'wcv-col' },
+            variant === 'workbench' ? h('div', { className: 'wcv-colHead' }, '正文') : null,
+            h(
+              'div',
+              { className: 'wcv-canvasWrap' },
+              h('textarea', {
+                className: 'wcv-editor',
+                value: text,
+                spellCheck: false,
+                placeholder: '在这里开始写，或让 Agent 把草稿写进这份文档……',
+                onChange,
+              }),
+            ),
+          ),
+
+          h(
+            'div',
+            { className: 'wcv-col' },
+            h('div', { className: 'wcv-colHead' }, `版本历史（${versions.length}）`),
+            h(
+              'div',
+              { className: 'wcv-colBody' },
+              versions.length === 0
+                ? h('div', { className: 'wcv-empty' }, '还没有版本。开始输入并停止片刻，就会自动生成第一个不可变版本。')
+                : [...versions].reverse().map((version) =>
+                    h(
+                      'div',
+                      { key: version.n, className: 'wcv-ver', 'data-active': viewing?.n === version.n ? 'true' : 'false' },
+                      h(
+                        'div',
+                        {
+                          className: 'wcv-verTop',
+                          onClick: () => {
+                            void apiGet('/doc/version', new URLSearchParams({ ...Object.fromEntries(targetQuery(target)), n: String(version.n) }))
+                              .then(({ ok, data }) => {
+                                if (ok) setViewing(data.version);
+                              });
+                          },
+                        },
+                        `v${version.n}`,
+                        h('span', { className: 'wcv-verMeta' }, sourceLabel(version.source)),
+                      ),
+                      h(
+                        'div',
+                        { className: 'wcv-verMeta' },
+                        `${formatTime(version.at)} · ${version.bytes} 字节`,
+                      ),
+                      viewing?.n === version.n
+                        ? h(
+                            'div',
+                            null,
+                            h('div', { className: 'wcv-preview' }, viewing.content.slice(0, 400)),
+                            h(
+                              'div',
+                              { className: 'wcv-actions' },
+                              h(
+                                'button',
+                                { className: 'wcv-btn', onClick: () => void restore(version.n) },
+                                '还原到此版本',
+                              ),
+                              h('button', { className: 'wcv-btn', onClick: () => setViewing(null) }, '收起'),
+                            ),
+                          )
+                        : null,
+                    ),
+                  ),
+            ),
+          ),
+        ),
+
+        h(
+          'div',
+          { className: 'wcv-foot' },
+          h('span', null, `文档 ${doc?.docId ?? '—'}`),
+          h('span', null, `工作区 ${doc?.workspace ?? '—'}`),
+          h(
+            'span',
+            { style: { marginLeft: 'auto' } },
+            doc?.meta?.updatedAt !== undefined ? `最近更新 ${formatTime(doc.meta.updatedAt)}` : '',
+          ),
+        ),
+      );
+    }
+
     /**
      * 侧边栏入口图标（一支笔）。
      * 官方 owner props 契约：{ size: number, active: boolean }。
-     * 选中态的配色由 sidebar 外壳负责，这里只遵守尺寸，并透出 active 供样式挂钩。
      */
     function PanelIcon(props) {
       const size =
@@ -179,140 +521,156 @@ window.__ModuleLoader__.load({
       );
     }
 
-    /** P0 阶段先列出规划中的写作类型；P2 改为由写作类型插件提供。 */
-    const PLANNED_TYPES = [
-      { id: 'creative', label: '创意写作', phase: 'P2' },
-      { id: 'gongwen', label: '公文写作', phase: 'P2' },
-      { id: 'video-script', label: '视频文案', phase: 'P2' },
-      { id: 'xiaohongshu', label: '小红书文案', phase: 'P2' },
-      { id: 'news', label: '新闻写作', phase: 'P2' },
-    ];
+    /** 右栏标签页 body：绑定当前会话的那一份文档。 */
+    function CanvasTabBody(props) {
+      const sessionId = props?.sessionId;
+      // 用会话 id 作为 key，切换会话时强制重新挂载 Canvas，避免串内容。
+      return h(Canvas, { key: String(sessionId), target: { sessionId }, variant: 'pane' });
+    }
 
-    /** 写作工作台整页组件。 */
-    function WritingCanvasPanel() {
-      const [health, setHealth] = React.useState(null);
-      const [error, setError] = React.useState(null);
-      const [draft, setDraft] = React.useState('');
+    /** 工作台整页：跨会话浏览/编辑工作区内的文档。 */
+    function WorkbenchPanel(props) {
+      const [index, setIndex] = React.useState(null);
+      const [selected, setSelected] = React.useState(null);
+      const [reloadToken, setReloadToken] = React.useState(0);
+      void props;
 
       React.useEffect(() => {
         let cancelled = false;
-        fetch(`${API_BASE}/health`, { headers: { accept: 'application/json' } })
-          .then((response) => (response.ok ? response.json() : Promise.reject(new Error(`HTTP ${response.status}`))))
-          .then((value) => {
-            if (!cancelled) {
-              setHealth(value);
-              setError(null);
+        apiGet('/docs')
+          .then(({ ok, data }) => {
+            if (cancelled || !ok) return;
+            setIndex(data);
+            if (selected === null && Array.isArray(data.documents) && data.documents.length > 0) {
+              let remembered = null;
+              try {
+                remembered = localStorage.getItem(WORKBENCH_SELECTION_KEY);
+              } catch {
+                remembered = null;
+              }
+              const match =
+                remembered === null
+                  ? undefined
+                  : data.documents.find((d) => `${d.workspace}|${d.docId}` === remembered);
+              const first = match ?? data.documents[0];
+              setSelected({ workspace: first.workspace, docId: first.docId });
             }
           })
-          .catch((cause) => {
-            if (!cancelled) setError(String(cause));
-          });
+          .catch(() => {});
         return () => {
           cancelled = true;
         };
-      }, []);
+      }, [reloadToken]);
 
-      const state = error !== null ? 'error' : health !== null ? 'ok' : 'pending';
-      const stateText =
-        error !== null ? '宿主未连通' : health !== null ? '宿主已连通' : '正在连接宿主…';
+      const pick = (doc) => {
+        setSelected({ workspace: doc.workspace, docId: doc.docId });
+        try {
+          localStorage.setItem(WORKBENCH_SELECTION_KEY, `${doc.workspace}|${doc.docId}`);
+        } catch {
+          // 记忆失败不影响使用。
+        }
+      };
 
-      return h(
-        'div',
-        { className: 'wcv-root' },
+      const renderDocs = () =>
         h(
           'div',
-          { className: 'wcv-header' },
-          h('div', { className: 'wcv-title' }, '写作工作台'),
-          h('div', { className: 'wcv-sub' }, 'dsh-writing-canvas · 阶段 P0 骨架'),
+          { className: 'wcv-col' },
+          h('div', { className: 'wcv-colHead' }, `工作区文档（${index?.documents?.length ?? 0}）`),
           h(
             'div',
-            { className: 'wcv-pill' },
-            h('span', { className: 'wcv-dot', 'data-state': state }),
-            stateText,
-          ),
-        ),
-        h(
-          'div',
-          { className: 'wcv-body' },
-          // 左：写作类型
-          h(
-            'div',
-            { className: 'wcv-col' },
-            h('div', { className: 'wcv-colHead' }, '写作类型'),
-            h(
-              'div',
-              { className: 'wcv-colBody' },
-              ...PLANNED_TYPES.map((type) =>
-                h(
-                  'div',
-                  { className: 'wcv-type', key: type.id, 'data-active': type.id === 'creative' ? 'true' : 'false' },
-                  type.label,
-                  h('span', { className: 'wcv-tag' }, type.phase),
-                ),
-              ),
-              h(
-                'div',
-                { className: 'wcv-empty' },
-                'P2 起这些类型由各自的写作类型插件提供，可单独启用/停用，并各自携带专属的强约束与格式规格。',
-              ),
-            ),
-          ),
-          // 中：Canvas
-          h(
-            'div',
-            { className: 'wcv-col' },
-            h('div', { className: 'wcv-colHead' }, '正文'),
-            h(
-              'div',
-              { className: 'wcv-note' },
-              'P0 临时状态：这个框可以真实输入，但内容只存在于当前页面内存，刷新即丢失。',
-              ' P1 会把它接到文档存储上，届时自动保存、不可变版本与批注都会真实生效。',
-            ),
-            h(
-              'div',
-              { className: 'wcv-canvasWrap' },
-              h('textarea', {
-                className: 'wcv-editor',
-                value: draft,
-                spellCheck: false,
-                placeholder: '在这里开始写，或让 Agent 把草稿写进这份文档……',
-                onChange: (event) => setDraft(event.target.value),
-              }),
-            ),
-          ),
-          // 右：版本历史 + 宿主状态
-          h(
-            'div',
-            { className: 'wcv-col' },
-            h('div', { className: 'wcv-colHead' }, '版本历史'),
-            h(
-              'div',
-              { className: 'wcv-colBody' },
-              h('div', { className: 'wcv-empty' }, 'P1 接入：每次写入都会生成一个不可变版本，可查看差异与还原。'),
-            ),
-            h('div', { className: 'wcv-colHead' }, '宿主状态'),
-            h(
-              'div',
-              { className: 'wcv-colBody' },
-              error !== null
-                ? h('div', { className: 'wcv-empty' }, `连接失败：${error}`)
-                : health === null
-                  ? h('div', { className: 'wcv-empty' }, '读取中…')
-                  : h(
+            { className: 'wcv-colBody' },
+            index === null
+              ? h('div', { className: 'wcv-empty' }, '读取中…')
+              : index.documents.length === 0
+                ? h(
+                    'div',
+                    { className: 'wcv-empty' },
+                    '这个工作区还没有文档。在对话旁的写作画布里写点什么，或直接点右侧开始输入，第一个版本就会出现在这里。',
+                  )
+                : index.documents.map((doc) =>
+                    h(
                       'div',
-                      null,
-                      h('div', { className: 'wcv-kv' }, h('span', null, '插件'), h('span', null, String(health.plugin))),
-                      h('div', { className: 'wcv-kv' }, h('span', null, '目标 Release'), h('span', null, String(health.release))),
-                      h('div', { className: 'wcv-kv' }, h('span', null, '状态目录'), h('span', null, String(health.stateDir))),
-                      h('div', { className: 'wcv-kv' }, h('span', null, '约束段'), h('span', null, String(health.constraintsSection))),
+                      {
+                        key: `${doc.workspace}|${doc.docId}`,
+                        className: 'wcv-docRow',
+                        'data-active':
+                          selected !== null && selected.docId === doc.docId && selected.workspace === doc.workspace
+                            ? 'true'
+                            : 'false',
+                        onClick: () => pick(doc),
+                      },
+                      h('div', null, doc.title),
+                      h('div', { className: 'wcv-docMeta' }, `${doc.workspaceTitle ?? doc.workspace}`),
+                      h('div', { className: 'wcv-docMeta' }, `v${doc.latest} · ${formatTime(doc.updatedAt)}`),
                     ),
+                  ),
+            h(
+              'div',
+              { className: 'wcv-actions' },
+              h('button', { className: 'wcv-btn', onClick: () => setReloadToken((n) => n + 1) }, '刷新列表'),
             ),
           ),
-        ),
-      );
+        );
+
+      if (selected === null) {
+        return h(
+          'div',
+          { className: 'wcv-root wcv-root--workbench' },
+          h(
+            'div',
+            { className: 'wcv-header' },
+            h('div', { className: 'wcv-title' }, '写作工作台'),
+            h('div', { className: 'wcv-sub' }, '选择一个文档开始'),
+          ),
+          h(
+            'div',
+            { className: 'wcv-body' },
+            renderDocs(),
+            h('div', { className: 'wcv-col' }, h('div', { className: 'wcv-empty', style: { padding: '16px' } }, '左侧还没有可编辑的文档。')),
+            h('div', { className: 'wcv-col' }),
+          ),
+        );
+      }
+
+      return h(Canvas, {
+        key: `${selected.workspace}|${selected.docId}|${reloadToken}`,
+        target: { workspace: selected.workspace, docId: selected.docId },
+        variant: 'workbench',
+        renderDocs,
+      });
     }
 
-    /** Cordis 依赖：等待 slots 服务就绪。 */
+    /**
+     * 生成"自动开启画布"的无渲染组件。
+     *
+     * 挂在 conversation.composer.dock（会话级槽位）上：只要会话在屏幕上，它就在。
+     * 每个会话只尝试一次，并在 localStorage 记录；用户手动关掉后不会再被强行打开。
+     */
+    function makeAutoOpen(ctx) {
+      return function CanvasAutoOpen(props) {
+        const sessionId = props?.sessionId;
+        React.useEffect(() => {
+          if (typeof sessionId !== 'string' || sessionId === '') return;
+          const key = `${AUTOOPEN_KEY_PREFIX}${sessionId}`;
+          try {
+            if (localStorage.getItem(key) === '1') return;
+            localStorage.setItem(key, '1');
+          } catch {
+            // 无 localStorage 时退化为「本组件实例内只尝试一次」。
+          }
+          const sidebarRight = ctx.get('sidebarRight') ?? ctx.sidebarRight;
+          if (sidebarRight === undefined || sidebarRight === null || typeof sidebarRight.openTab !== 'function') return;
+          try {
+            sidebarRight.openTab(CANVAS_KIND);
+          } catch (error) {
+            console.warn('[writing-canvas] 自动开启画布失败：', error);
+          }
+        }, [sessionId]);
+        return null;
+      };
+    }
+
+    /** Cordis 依赖：只需 slots；右栏相关服务用可选方式获取，缺失时优雅降级。 */
     const inject = ['slots'];
 
     /**
@@ -321,19 +679,50 @@ window.__ModuleLoader__.load({
      */
     function apply(ctx) {
       const disposeStyles = insertStyles();
+      const CanvasAutoOpen = makeAutoOpen(ctx);
 
-      // 侧边栏全局面板入口：id 必须与 main 的 key 一致。
+      /** 注册右栏标签页类型（keepMounted = 跨切换保留 body）。 */
+      const registerTabType = (scoped) => {
+        const tabs = scoped.get('sidebarRightTabs') ?? scoped.sidebarRightTabs;
+        if (tabs === undefined || tabs === null || typeof tabs.register !== 'function') return;
+        scoped.effect(
+          () =>
+            tabs.register({
+              id: CANVAS_TAB_ID,
+              kind: CANVAS_KIND,
+              title: () => '写作画布',
+              keepMounted: true,
+            }),
+          'writing-canvas: 右栏标签页类型',
+        );
+      };
+      registerTabType(ctx);
+      // 右栏服务可能在插件之后才就绪，出现时补注册。
+      ctx.on('internal/service', (name) => {
+        if (name === 'sidebarRightTabs') registerTabType(ctx);
+      });
+
+      // 形态 A：右栏标签页 body（声明感知注入，右栏存在时才生效）。
+      ctx.slots.inject('sidebar.right.pane.tab', () =>
+        ctx.slots.register({ name: 'sidebar.right.pane.tab', key: CANVAS_TAB_ID }, CanvasTabBody),
+      );
+
+      // 形态 A 的自动开启：会话在屏幕上时把画布钉到对话旁。
+      ctx.slots.inject('conversation.composer.dock', () =>
+        ctx.slots.register(
+          { name: 'conversation.composer.dock', id: 'writing-canvas-autoopen', order: 40 },
+          CanvasAutoOpen,
+        ),
+      );
+
+      // 形态 B：侧边栏入口 + 整页工作台。
       ctx.slots.inject('sidebar.panellist', () =>
         ctx.slots.register(
           { name: 'sidebar.panellist', id: PANEL_ID, order: 30, label: '写作工作台' },
           PanelIcon,
         ),
       );
-
-      // 整页界面：占据中央主区域。
-      ctx.slots.inject('main', () =>
-        ctx.slots.register({ name: 'main', key: PANEL_ID }, WritingCanvasPanel),
-      );
+      ctx.slots.inject('main', () => ctx.slots.register({ name: 'main', key: PANEL_ID }, WorkbenchPanel));
 
       ctx.effect(() => disposeStyles, 'writing-canvas: 客户端样式');
     }
