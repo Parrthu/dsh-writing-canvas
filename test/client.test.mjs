@@ -199,3 +199,36 @@ test('高亮分段：建议不改变文本长度（高亮层必须与输入框�
   const joined = segments.map((s) => s.text).join('');
   assert.equal(joined, content, '拼接结果必须与正文完全一致，否则高亮层会错位');
 });
+
+test('版本对比：相同文本没有增删行', () => {
+  const { diffLines } = client.__internals;
+  const lines = diffLines('甲\n乙\n丙', '甲\n乙\n丙');
+  assert.deepEqual(lines.map((l) => l.type), ['same', 'same', 'same']);
+});
+
+test('版本对比：能识别新增、删除与改动行', () => {
+  const { diffLines } = client.__internals;
+  const lines = diffLines('甲\n乙\n丙', '甲\n乙改了\n丙\n丁');
+  const added = lines.filter((l) => l.type === 'add').map((l) => l.text);
+  const removed = lines.filter((l) => l.type === 'del').map((l) => l.text);
+  assert.ok(added.includes('丁'), '新增行应被识别');
+  assert.ok(added.includes('乙改了') || removed.includes('乙'), '改动应体现为增或删');
+  assert.deepEqual(
+    lines.filter((l) => l.type === 'same').map((l) => l.text),
+    ['甲', '丙'],
+  );
+});
+
+test('版本对比：空文本与单行文本不会崩', () => {
+  const { diffLines } = client.__internals;
+  assert.deepEqual(diffLines('', '甲').map((l) => l.type), ['del', 'add']);
+  assert.equal(diffLines('甲', '甲').length, 1);
+});
+
+test('版本对比：超长文本退化为整体替换而不卡住', () => {
+  const { diffLines } = client.__internals;
+  const big = Array.from({ length: 700 }, (_, i) => `行${i}`).join('\n');
+  const other = Array.from({ length: 700 }, (_, i) => `别${i}`).join('\n');
+  const lines = diffLines(big, other);
+  assert.equal(lines.length, 1400, '应为全删 + 全增');
+});

@@ -191,6 +191,17 @@ window.__ModuleLoader__.load({
   text-decoration: line-through; white-space: pre-wrap; }
 .wcv-diffIns { font-size: 12px; line-height: 1.6; padding: 5px 8px; border-radius: 6px;
   background: rgba(26, 156, 83, 0.10); white-space: pre-wrap; }
+/* 版本对比：行级差异 */
+.wcv-diffStat { font-size: 11.5px; color: var(--dsw-alias-label-secondary, #6b6b6b); margin: 6px 0 4px; }
+.wcv-diff { max-height: 220px; overflow: auto; border-radius: 6px; padding: 5px 0;
+  background: var(--dsw-alias-bg-layer-1, rgba(128,128,128,0.06));
+  border: 1px solid var(--dsw-alias-border-l1, rgba(128,128,128,0.2)); }
+.wcv-diffLine { display: flex; gap: 6px; font-size: 11.5px; line-height: 1.6;
+  padding: 0 8px; white-space: pre-wrap; word-break: break-word; }
+.wcv-diffLine[data-type="add"] { background: rgba(26, 156, 83, 0.13); }
+.wcv-diffLine[data-type="del"] { background: rgba(217, 48, 37, 0.10);
+  color: var(--dsw-alias-label-secondary, #6b6b6b); text-decoration: line-through; }
+.wcv-diffSign { flex: none; width: 9px; opacity: 0.7; font-family: ui-monospace, monospace; }
 .wcv-editor--over { position: relative; z-index: 1; background: transparent !important; }
 
 /* ---- 撰写中 ---- */
@@ -579,6 +590,28 @@ window.__ModuleLoader__.load({
             });
             editorNode.setSelectionRange(previous[0], previous[1]);
             setSelection(null);
+
+            // 顺带点开第一个版本行，确认差异视图能渲染出来。
+            const versionRow = rootRef.current === null ? null : rootRef.current.querySelector('.wcv-verTop');
+            if (versionRow === null) {
+              report('selfcheck:version-diff', { versionRow: false });
+              return;
+            }
+            versionRow.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+            setTimeout(() => {
+              const root = rootRef.current;
+              report('selfcheck:version-diff', {
+                versionRow: true,
+                diffRendered: root === null ? false : root.querySelector('.wcv-diff') !== null,
+                diffLines: root === null ? 0 : root.querySelectorAll('.wcv-diffLine').length,
+                addedLines: root === null ? 0 : root.querySelectorAll('.wcv-diffLine[data-type="add"]').length,
+                removedLines: root === null ? 0 : root.querySelectorAll('.wcv-diffLine[data-type="del"]').length,
+                diffStat:
+                  root === null || root.querySelector('.wcv-diffStat') === null
+                    ? null
+                    : root.querySelector('.wcv-diffStat').textContent,
+              });
+            }, 500);
           }, 300);
         }, 1500);
         return () => clearTimeout(timer);
@@ -1121,7 +1154,29 @@ window.__ModuleLoader__.load({
                   ? h(
                       'div',
                       null,
-                      h('div', { className: 'wcv-preview' }, viewing.content.slice(0, 400)),
+                      // 差异视图：把这个历史版本与当前正文逐行对照
+                      h(
+                        'div',
+                        { className: 'wcv-diffStat' },
+                        (() => {
+                          const lines = diffLines(viewing.content, text);
+                          const added = lines.filter((l) => l.type === 'add').length;
+                          const removed = lines.filter((l) => l.type === 'del').length;
+                          return `与当前正文相比：+${added} 行 / -${removed} 行`;
+                        })(),
+                      ),
+                      h(
+                        'div',
+                        { className: 'wcv-diff' },
+                        ...diffLines(viewing.content, text).map((line, index) =>
+                          h(
+                            'div',
+                            { key: index, className: 'wcv-diffLine', 'data-type': line.type },
+                            h('span', { className: 'wcv-diffSign' }, line.type === 'add' ? '+' : line.type === 'del' ? '-' : ' '),
+                            h('span', null, line.text === '' ? ' ' : line.text),
+                          ),
+                        ),
+                      ),
                       h(
                         'div',
                         { className: 'wcv-actions' },
@@ -2164,6 +2219,54 @@ window.__ModuleLoader__.load({
       return segments;
     }
 
+    /**
+     * 行级差异（LCS）。用于版本对比：把「某个历史版本」与「当前版本」逐行对照。
+     *
+     * 文本量不大时用经典动态规划最直观；超过上限就退化为整体替换，
+     * 避免在长文上卡住界面（诚实降级，而不是假装算完了）。
+     *
+     * @param before - 旧文本。
+     * @param after - 新文本。
+     * @returns [{ type: 'same'|'add'|'del', text }]
+     */
+    function diffLines(before, after) {
+      const a = String(before ?? '').split('\n');
+      const b = String(after ?? '').split('\n');
+      if (a.length * b.length > 400_000) {
+        return [
+          ...a.map((text) => ({ type: 'del', text })),
+          ...b.map((text) => ({ type: 'add', text })),
+        ];
+      }
+      const n = a.length;
+      const m = b.length;
+      const dp = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
+      for (let i = n - 1; i >= 0; i -= 1) {
+        for (let j = m - 1; j >= 0; j -= 1) {
+          dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+        }
+      }
+      const out = [];
+      let i = 0;
+      let j = 0;
+      while (i < n && j < m) {
+        if (a[i] === b[j]) {
+          out.push({ type: 'same', text: a[i] });
+          i += 1;
+          j += 1;
+        } else if (dp[i + 1][j] >= dp[i][j + 1]) {
+          out.push({ type: 'del', text: a[i] });
+          i += 1;
+        } else {
+          out.push({ type: 'add', text: b[j] });
+          j += 1;
+        }
+      }
+      while (i < n) out.push({ type: 'del', text: a[i++] });
+      while (j < m) out.push({ type: 'add', text: b[j++] });
+      return out;
+    }
+
     /** 由选区起点算出浮动工具条该出现的位置（基于高亮层的镜像排版）。 */
     function measureCaret(layer, offset) {
       if (layer === null || layer === undefined) return null;
@@ -2484,7 +2587,7 @@ window.__ModuleLoader__.load({
     exports.inject = inject;
     // 纯函数暴露给单元测试。它们不依赖 DOM，也不产生副作用，
     // 但内联在 bundle 里无法被 import，所以留这个测试入口。
-    exports.__internals = { transformSelection, buildHighlightSegments, formatKeys, modifiersOf };
+    exports.__internals = { transformSelection, buildHighlightSegments, diffLines, formatKeys, modifiersOf };
     return exports;
   },
 });
