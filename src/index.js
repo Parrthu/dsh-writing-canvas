@@ -15,6 +15,7 @@
 import { CONSTRAINTS_SECTION_NAME, TYPES_SECTION_NAME, constraintsText, typesSectionText } from './prompt.js';
 import { createEventBus } from './events.js';
 import { API_PREFIX, createApiHandler } from './routes.js';
+import { mergeOverrides } from './prompt-overrides.js';
 import { createStoreRegistry } from './stores.js';
 import { registerWritingTools } from './tools.js';
 import { onTypesChanged, writingCanvasTypes } from './types/registry.js';
@@ -28,6 +29,14 @@ const DEFAULT_CONFIG = {
   stateDir: '.writing-canvas',
   promptSectionOrder: 118,
   maxDocumentBytes: 4 * 1024 * 1024,
+  // 是否向系统提示注入「写作硬约束」与「写作类型」两段。
+  //
+  // 默认 false，这是刻意的：本插件挂在**宿主组合**里，对每个会话都生效。
+  // 若默认注入，那么无论用户建的是哪个模式的任务，模型都会被告知
+  // 「你在本工作区中承担写作任务」「正文一律通过 writing_canvas_write 写入写作画布」，
+  // 结果就是普通编码 / 问答任务也被当成写作任务处理——这是明确的用户投诉。
+  // 只有写作模式（preset）才把它打开。
+  injectPrompt: false,
   // 开发期开关：让界面自动做一次交互自检（选中正文 → 确认浮动工具条出现），
   // 结果回报到 /client-report。默认关闭，交付版本不会打扰用户。
   interactionSelfTest: false,
@@ -50,6 +59,7 @@ function resolveConfig(raw) {
       ? input.promptSectionOrder
       : DEFAULT_CONFIG.promptSectionOrder,
     maxDocumentBytes: positive(input.maxDocumentBytes, DEFAULT_CONFIG.maxDocumentBytes),
+    injectPrompt: input.injectPrompt === true,
     interactionSelfTest: input.interactionSelfTest === true,
     workbenchSelfTest: input.workbenchSelfTest === true,
   };
@@ -84,38 +94,43 @@ export function apply(ctx, rawConfig) {
   }
 
   // 1) 强指令约束提示段：跨写作类型的通用硬约束。
-  ctx.inject(['systemPrompt'], (scoped) => {
-    scoped.effect(
-      () =>
-        scoped.systemPrompt.section({
-          name: CONSTRAINTS_SECTION_NAME,
-          order: config.promptSectionOrder,
-          text: constraintsText(),
-        }),
-      'writing-canvas: 强指令约束提示段',
-    );
+  //
+  //    只有在写作模式下才注册（config.injectPrompt）。宿主组合对每个会话都生效，
+  //    无条件注册会让所有模式的任务都被当成写作任务。
+  if (config.injectPrompt) {
+    ctx.inject(['systemPrompt'], (scoped) => {
+      scoped.effect(
+        () =>
+          scoped.systemPrompt.section({
+            name: CONSTRAINTS_SECTION_NAME,
+            order: config.promptSectionOrder,
+            text: constraintsText(),
+          }),
+        'writing-canvas: 强指令约束提示段',
+      );
 
-    // 1b) 写作类型与专属硬约束。
-    //     写作类型是独立的插件行，注册时机晚于本插件，所以这里订阅注册表变化，
-    //     每次变化都重新注册该提示段，保证提示内容始终与已启用的类型一致。
-    scoped.effect(() => {
-      let disposeSection = null;
-      const install = () => {
-        if (disposeSection !== null) disposeSection();
-        disposeSection = scoped.systemPrompt.section({
-          name: TYPES_SECTION_NAME,
-          order: config.promptSectionOrder + 1,
-          text: typesSectionText(),
-        });
-      };
-      install();
-      const unsubscribe = onTypesChanged(install);
-      return () => {
-        unsubscribe();
-        if (disposeSection !== null) disposeSection();
-      };
-    }, 'writing-canvas: 写作类型提示段');
-  });
+      // 1b) 写作类型与专属硬约束。
+      //     写作类型是独立的插件行，注册时机晚于本插件，所以这里订阅注册表变化，
+      //     每次变化都重新注册该提示段，保证提示内容始终与已启用的类型一致。
+      scoped.effect(() => {
+        let disposeSection = null;
+        const install = () => {
+          if (disposeSection !== null) disposeSection();
+          disposeSection = scoped.systemPrompt.section({
+            name: TYPES_SECTION_NAME,
+            order: config.promptSectionOrder + 1,
+            text: typesSectionText(),
+          });
+        };
+        install();
+        const unsubscribe = onTypesChanged(install);
+        return () => {
+          unsubscribe();
+          if (disposeSection !== null) disposeSection();
+        };
+      }, 'writing-canvas: 写作类型提示段');
+    });
+  }
 
   // 2) 宿主 API：文档读写、不可变版本、还原、批注、实时事件流。
   ctx.inject(['webServer'], (scoped) => {
@@ -134,11 +149,27 @@ export function apply(ctx, rawConfig) {
             libraryFor,
             bus,
             logger: ctx.logger,
+            // 提示词被用户改动后刷新共享缓存。
+            // 提示段的重装由 mode/writing 自己订阅 onOverridesChanged 完成——
+            // 那一段挂在 preset 的 agent scope 里，宿主这一层够不着。
+            onPromptChanged: () => {},
           }),
         }),
       'writing-canvas: 宿主 API 路由',
     );
   });
+
+  // 2b) 启动时把各工作区已有的提示词覆盖灌进共享缓存，
+  //     否则重启后用户改过的提示词要等下次保存才生效。
+  void (async () => {
+    try {
+      for (const workspace of listWorkspaces()) {
+        mergeOverrides(await libraryFor(workspace.path).listTypePrompts());
+      }
+    } catch (error) {
+      ctx.logger.warn(`writing-canvas: 读取写作类型提示词覆盖失败（不影响其他功能）：${String(error)}`);
+    }
+  })();
 
   // 3) Agent 工具：让模型真正能读写画布、读写批注、提出修改建议、套用格式。
   ctx.inject(['tools'], (scoped) => {

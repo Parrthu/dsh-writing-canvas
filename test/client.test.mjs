@@ -43,7 +43,7 @@ async function loadClientExports() {
 }
 
 const client = await loadClientExports();
-const { transformSelection, buildHighlightSegments, formatKeys, modifiersOf } = client.__internals;
+const { transformSelection, buildHighlightSegments, formatKeys, modifiersOf, readAgentPresetId } = client.__internals;
 
 test('客户端 bundle 以宿主契约的形态导出', () => {
   assert.equal(typeof client.apply, 'function');
@@ -231,4 +231,284 @@ test('版本对比：超长文本退化为整体替换而不卡住', () => {
   const other = Array.from({ length: 700 }, (_, i) => `别${i}`).join('\n');
   const lines = diffLines(big, other);
   assert.equal(lines.length, 1400, '应为全删 + 全增');
+});
+
+// ---- 回归测试：右栏画布拿不到会话 id（2026-09-30「画布空白」事故）----------
+//
+// 右栏槽位的组件**拿不到任何 props**（宿主是 renderSlot(seat, {}, { hookContext})），
+// 会话身份只能靠 register 的 `inject(sessionId)` 注入。漏掉 inject 时
+// CanvasTabBody 的 props.sessionId 恒为 undefined，画布会去读
+// docIdOfSession(undefined) = "default" 那份空文档，表现就是「永远空白、永远新文档」，
+// 而同一份正文在磁盘上明明存在。官方 sidebar-terminal 同样依赖 inject
+// （dsh-client-ui-renderer 的 runInject：args.push(binding.key)，返回值展开为 props）。
+//
+// 这里直接对 bundle 源码做断言：apply() 需要完整的 Cordis 宿主，桩件跑不完整条链路，
+// 与其造一个假的宿主，不如把「注册形态」这条契约钉死在源码上。
+
+const CLIENT_SOURCE = await readFile(CLIENT_PATH, 'utf8');
+const PATCH_SOURCE = await readFile(join(HERE, '..', 'cordis.patch.yml'), 'utf8');
+const PRESET_PATCH_SOURCE = await readFile(join(HERE, '..', 'presets', 'writing.patch.yml'), 'utf8');
+
+test('回归：右栏标签页注册必须声明 inject(sessionId)', () => {
+  const paneRegistration = CLIENT_SOURCE.match(
+    /name:\s*'sidebar\.right\.pane\.tab',[\s\S]{0,400}?inject:\s*\(sessionId\)\s*=>\s*\(\{\s*sessionId\s*\}\)/,
+  );
+  assert.ok(
+    paneRegistration !== null,
+    "sidebar.right.pane.tab 的注册里必须带 inject: (sessionId) => ({ sessionId })",
+  );
+});
+
+test('回归：右侧画布 body 从注入里读会话 id，而不是指望 props 里自带', () => {
+  const body = CLIENT_SOURCE.match(/function CanvasTabBody\(props\)\s*\{[\s\S]{0,300}?\}/);
+  assert.ok(body !== null, 'CanvasTabBody 必须存在');
+  assert.match(body[0], /props\?\.sessionId/, 'CanvasTabBody 必须从 props.sessionId 取会话 id（该 props 由 inject 提供）');
+  assert.match(body[0], /target:\s*\{\s*sessionId\s*\}/, '必须把 sessionId 作为画布 target');
+});
+
+test('回归：只有写作模式才自动调出画布，其他模式一律不自动开', () => {
+  // 事故复盘（被用户投诉两次）：
+  //   1. 最初「只要会话在屏幕上就开」——每建一个任务都弹空画布。
+  //   2. 后来改成「文档里有正文才恢复」——普通任务的会话照样弹。
+  // 用户原话：「我只有在特定条件下触发之后才进入写作，不要直接就进入写作了」。
+  // 现在的判据是会话的 agent preset 是不是 writing，所以把这条契约钉死。
+  assert.match(
+    CLIENT_SOURCE,
+    /const WRITING_PRESET_ID = 'writing';/,
+    '必须定义写作模式的 preset id，且与 cordis.patch.yml 里 preset-writing 的 config.id 一致',
+  );
+  assert.match(CLIENT_SOURCE, /readAgentPreset/, '必须去读会话的 agent preset');
+  assert.match(
+    CLIENT_SOURCE,
+    /preset !== WRITING_PRESET_ID/,
+    '非写作模式必须有明确的分支直接返回（不自动开）',
+  );
+  assert.match(
+    CLIENT_SOURCE,
+    /autoopen:skip[\s\S]{0,120}not-writing-mode/,
+    '非写作模式要上报 skip 原因，便于事后核对走了哪条分支',
+  );
+});
+
+test('回归：preset 判据必须先于 openTab，且取不到判据时不开（fail closed）', () => {
+  const fn = CLIENT_SOURCE.slice(CLIENT_SOURCE.indexOf('function makeAutoOpen'));
+  const gateAt = fn.indexOf('preset !== WRITING_PRESET_ID');
+  const openAt = fn.indexOf('sidebarRight.openTab(');
+  assert.ok(gateAt !== -1, 'makeAutoOpen 里必须有 preset 判定');
+  assert.ok(openAt !== -1, 'makeAutoOpen 里必须有 openTab');
+  assert.ok(gateAt < openAt, 'preset 判定必须在 openTab 之前，否则等于没判');
+
+  // 取不到 preset 时要走 skip 而不是 openTab——宁可让用户手动开一次，
+  // 也不要再出现「莫名其妙自己弹出来」。
+  assert.match(
+    fn,
+    /agent-preset-unknown/,
+    '读不到 preset 时必须放弃自动开启（fail closed）',
+  );
+});
+
+test('回归：preset-writing 声明的 id 必须与客户端常量一致', () => {
+  // 两边分处不同文件、不同语言半边，靠字符串对齐，必须机械校验而不是靠记忆。
+  const patch = PRESET_PATCH_SOURCE;
+  const idMatch = patch.match(/- id: preset-writing[\s\S]{0,200}?config:\s*\n\s*id: (\w+)/);
+  assert.ok(idMatch !== null, 'patch 里必须声明 preset-writing 且带 config.id');
+  const clientId = CLIENT_SOURCE.match(/const WRITING_PRESET_ID = '([^']+)';/);
+  assert.ok(clientId !== null, '客户端必须有 WRITING_PRESET_ID');
+  assert.equal(
+    clientId[1],
+    idMatch[1],
+    `预设 id（${idMatch[1]}）与客户端 WRITING_PRESET_ID（${clientId[1]}）必须一致，否则画布永不自动打开`,
+  );
+});
+
+// ---- preset 读取：决定「画布要不要自动出现」的那一步 --------------------------
+
+test('preset 读取：从服务 list store 取到会话的 agentPreset', () => {
+  const sessions = {
+    list: {
+      getSnapshot: () => ({
+        byId: { 's-1': { projectionValues: { agentPreset: 'writing' } } },
+      }),
+    },
+  };
+  assert.equal(readAgentPresetId({ sessions, sessionId: 's-1' }), 'writing');
+});
+
+test('preset 读取：取不到会话时返回 undefined（调用方据此 fail closed）', () => {
+  const sessions = { list: { getSnapshot: () => ({ byId: {} }) } };
+  assert.equal(readAgentPresetId({ sessions, sessionId: 's-x' }), undefined);
+  assert.equal(readAgentPresetId({ sessions, sessionId: '' }), undefined);
+  assert.equal(readAgentPresetId({ sessions: undefined, sessionId: 's-1' }), undefined);
+});
+
+test('preset 读取：服务抛错不得把异常抛给调用方', () => {
+  const sessions = {
+    list: {
+      getSnapshot() {
+        throw new Error('store 未就绪');
+      },
+    },
+  };
+  assert.equal(readAgentPresetId({ sessions, sessionId: 's-1' }), undefined);
+});
+
+test('preset 读取：槽位 hook 注入优先于服务读取', () => {
+  const useSessions = (selector) => selector({ byId: { 's-1': { projectionValues: { agentPreset: 'writing' } } } });
+  const sessions = { list: { getSnapshot: () => ({ byId: { 's-1': { projectionValues: { agentPreset: 'standard' } } } }) } };
+  assert.equal(readAgentPresetId({ sessions, useSessions, sessionId: 's-1' }), 'writing');
+});
+
+test('preset 读取：hook 抛错时退回到服务读取', () => {
+  const useSessions = () => {
+    throw new Error('在渲染期之外调用');
+  };
+  const sessions = { list: { getSnapshot: () => ({ byId: { 's-1': { projectionValues: { agentPreset: 'standard' } } } }) } };
+  assert.equal(readAgentPresetId({ sessions, useSessions, sessionId: 's-1' }), 'standard');
+});
+
+test('preset 读取：空字符串不算有效 preset', () => {
+  const sessions = { list: { getSnapshot: () => ({ byId: { 's-1': { projectionValues: { agentPreset: '' } } } }) } };
+  assert.equal(readAgentPresetId({ sessions, sessionId: 's-1' }), undefined);
+});
+
+test('回归：自动开启只认 writing，其他 preset 一律不开', () => {
+  // 把每种真实 preset 都过一遍，确保没有哪一种会误触发自动开启。
+  for (const preset of ['standard', 'ptc', 'minimal', 'cordis']) {
+    const sessions = { list: { getSnapshot: () => ({ byId: { 's-1': { projectionValues: { agentPreset: preset } } } }) } };
+    const read = readAgentPresetId({ sessions, sessionId: 's-1' });
+    assert.equal(read, preset);
+    assert.notEqual(read, 'writing', `preset=${preset} 不得被当成写作模式`);
+  }
+});
+
+// ---- 2026-10-01 界面重构：逐条钉住用户提出的问题 -----------------------------
+
+test('回归：撰写中焦点必须跟随（文字长出来时自动滚到底）', () => {
+  // 用户原话：「焦点始终在上方，用户不自己去动的话，他是不知道已经写完的」。
+  assert.match(CLIENT_SOURCE, /followWritingTail/, '必须有焦点跟随的函数');
+  assert.match(CLIENT_SOURCE, /scrollTop = el\.scrollHeight/, '要把编辑器拉到最底');
+  // 逐字推进的每个 tick 都要跟，否则中间那几秒视野仍然停在上面。
+  const reveal = CLIENT_SOURCE.slice(CLIENT_SOURCE.indexOf('const revealContent = React.useCallback'));
+  const tick = reveal.slice(0, reveal.indexOf('}, 16)'));
+  assert.match(tick, /followWritingTail\(\)/, '逐字推进的每个 tick 都必须跟一次');
+});
+
+test('回归：焦点跟随要同步高亮层，否则批注色块与文字错位', () => {
+  // 同步逻辑在 scrollEditorToEnd 里（followWritingTail 调用它）。
+  const fn = CLIENT_SOURCE.slice(CLIENT_SOURCE.indexOf('const scrollEditorToEnd'));
+  const body = fn.slice(0, fn.indexOf('\n      };'));
+  assert.match(body, /highlightRef\.current/, '要把高亮层也一起处理');
+  assert.match(body, /layer\.scrollTop = el\.scrollTop/, '高亮层的滚动位置要跟编辑器一致');
+});
+
+test('回归：AI 选区动作不得使用 window.prompt（Electron 不支持，点了没反应）', () => {
+  // 这是「改写/润色/扩写/批注四个按钮不可用」的真正原因。
+  assert.ok(
+    !/window\.prompt\s*\(/.test(CLIENT_SOURCE),
+    '不得调用 window.prompt：Electron 会直接抛错，表现为按钮点了没反应',
+  );
+  assert.match(CLIENT_SOURCE, /submitAiAction/, '必须有内联提交路径');
+  assert.match(CLIENT_SOURCE, /wcv-floatInput/, '浮动工具条要有内联输入框');
+});
+
+test('回归：AI 动作提交后落成带 anchor 的批注', () => {
+  const fn = CLIENT_SOURCE.slice(CLIENT_SOURCE.indexOf('const submitAiAction'));
+  const body = fn.slice(0, fn.indexOf('\n      };'));
+  assert.match(body, /addAnnotation\(aiAction\.kind/, '提交要落到批注通道');
+  assert.match(body, /start: selection\.start, end: selection\.end/, '批注要带选区位置');
+});
+
+test('回归：新建议到达时自动展开面板（否则用户以为 Agent 没成功）', () => {
+  // 事故：Agent 提交了 3 条建议且全部成功落盘，用户却说「并没有成功」——
+  // 因为窄栏下建议面板默认收起，只有一个不起眼的「建议 3」标签。
+  assert.match(CLIENT_SOURCE, /prevPendingRef/, '必须记录上一次的待决数量');
+  assert.match(
+    CLIENT_SOURCE,
+    /pendingSuggestions > prevPendingRef\.current[\s\S]{0,120}?setPaneTab\('suggestions'\)/,
+    '数量增加时必须自动展开到建议面板',
+  );
+});
+
+test('回归：有待决项时抽屉标签要高亮', () => {
+  assert.match(CLIENT_SOURCE, /'data-alert': pendingSuggestions > 0/, '建议标签要有 alert 态');
+  assert.match(CLIENT_SOURCE, /'data-alert': openCount > 0/, '批注标签要有 alert 态');
+});
+
+test('回归：右栏不再有「写作画布」抬头与文档副标题', () => {
+  // 多标签页形态里标签已经写着标题，画布内再顶一个同名抬头是重复且诡异的。
+  const headerIdx = CLIENT_SOURCE.indexOf("className: 'wcv-header'");
+  assert.ok(headerIdx !== -1, 'workbench 形态仍应保留 header');
+  const headerBlock = CLIENT_SOURCE.slice(headerIdx - 400, headerIdx + 400);
+  assert.match(
+    headerBlock,
+    /variant === 'pane'\s*\?\s*null/,
+    'pane 形态必须整块跳过 header',
+  );
+  assert.ok(
+    !CLIENT_SOURCE.includes("variant === 'pane' ? '写作画布' : '写作工作台'"),
+    '不得再按形态渲染「写作画布」抬头',
+  );
+});
+
+test('回归：写作类型与格式集合并进工具栏，不再各占一栏', () => {
+  assert.match(CLIENT_SOURCE, /wcv-meta/, '类型/格式集要渲染成 chip 按钮');
+  assert.match(CLIENT_SOURCE, /wcv-metaSelect/, 'chip 内要有覆盖其上的原生 select');
+  // 旧的独立选择条：样式与渲染都不应再存在。
+  assert.ok(
+    !/className: 'wcv-typeBar'/.test(CLIENT_SOURCE),
+    '不应再渲染独立的 wcv-typeBar',
+  );
+});
+
+test('回归：底栏在窄栏下不渲染（原来那条文档/工作区/最近更新太臃肿）', () => {
+  const idx = CLIENT_SOURCE.indexOf("className: 'wcv-foot'");
+  assert.ok(idx !== -1, 'workbench 仍保留一条极简底栏');
+  const block = CLIENT_SOURCE.slice(idx - 500, idx);
+  assert.match(block, /variant === 'pane'\s*\?\s*null/, 'pane 必须跳过底栏');
+  assert.ok(
+    !CLIENT_SOURCE.includes("`文档 ${doc?.docId ?? '—'}`"),
+    '不再把长 docId 直接铺在底栏上',
+  );
+});
+
+test('回归：提示词面板是可编辑的，不是只读清单', () => {
+  assert.match(CLIENT_SOURCE, /wcv-promptText/, '要有可编辑的提示词输入区');
+  assert.match(CLIENT_SOURCE, /loadTypePrompt/, '打开面板要拉取当前提示词');
+  assert.match(CLIENT_SOURCE, /saveTypePrompt/, '要有保存路径');
+  assert.match(CLIENT_SOURCE, /apiPost\('\/type-prompt'/, '保存要打到 /type-prompt');
+  assert.match(CLIENT_SOURCE, /恢复内置/, '要有恢复内置的出口');
+});
+
+test('回归：工具栏分两行，格式按钮不被 chip 挤断', () => {
+  // 实测问题：13 个格式按钮曾被 chip 挤成 5+8 两行，换行位置很乱。
+  assert.match(CLIENT_SOURCE, /wcv-toolRow/, '工具栏要有明确的行容器');
+  assert.match(CLIENT_SOURCE, /wcv-toolRow--formats/, '格式按钮要有独立一行');
+  // 格式按钮那一行必须包含全部 13 个，不再与 chip 混排。
+  const row = CLIENT_SOURCE.slice(CLIENT_SOURCE.indexOf("'wcv-toolRow wcv-toolRow--formats'"));
+  const list = row.slice(0, row.indexOf('].map('));
+  for (const kind of ['h1', 'h2', 'h3', 'bold', 'italic', 'strike', 'code', 'codeblock', 'quote', 'ul', 'ol', 'link', 'hr']) {
+    assert.ok(list.includes(`'${kind}'`), `格式按钮 ${kind} 必须在同一行里`);
+  }
+});
+
+test('回归：镜像层要补偿 textarea 的滚动条宽度（否则批注色块错位）', () => {
+  // 实测：textarea 有 7px 滚动条，镜像层 overflow:hidden 不占，
+  // 两层内容盒宽度不等 → 换行位置分叉 → 高亮色块与文字对不上。
+  assert.match(CLIENT_SOURCE, /syncHighlightMetrics/, '必须有宽度同步');
+  assert.match(
+    CLIENT_SOURCE,
+    /el\.offsetWidth - el\.clientWidth - border/,
+    '要真的把滚动条宽度量出来',
+  );
+  // 必须断言**补偿值真的被算进去了**：只断言出现过 paddingRight 是抓不到
+  // 「量了滚动条却没用上」的——这一点已被实验证伪过一次。
+  assert.match(
+    CLIENT_SOURCE,
+    /inner\.style\.paddingRight = `\$\{baseRight \+ scrollbar\}px`/,
+    '镜像层内边距必须是「原内边距 + 滚动条宽度」',
+  );
+  // 三条路径都要同步：内容变化、滚动、逐字推进。
+  const calls = CLIENT_SOURCE.match(/syncHighlightMetrics\(\)/g) ?? [];
+  assert.ok(calls.length >= 3, `同步点至少三处，实际 ${calls.length} 处`);
+  assert.match(CLIENT_SOURCE, /\}, \[text\]\);/, '内容变化后要重算');
 });

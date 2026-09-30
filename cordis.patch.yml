@@ -25,6 +25,11 @@
         promptSectionOrder: 118
         # 单次保存允许的最大正文字节数
         maxDocumentBytes: 4194304
+        # 不在这里注入写作提示段：本行挂在宿主组合里，对**每个会话**都生效。
+        # 写作硬约束与写作类型两段只应该在写作模式下出现，由
+        # `dsh-writing-canvas/mode/writing` 那一行在写作模式预设内提供。
+        # 若在这里打开，所有模式的任务都会被当成写作任务。
+        injectPrompt: false
 
     # ---------- 写作类型（可单独停用：给对应行加 disabled: true）----------
     - id: writing-type-creative

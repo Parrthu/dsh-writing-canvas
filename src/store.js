@@ -135,7 +135,11 @@ export class DocumentStore {
     const metaPath = join(dir, 'meta.json');
     if (!existsSync(metaPath)) return null;
     const meta = JSON.parse(await readFile(metaPath, 'utf8'));
-    const latest = await this.readVersion(docId, meta.latest);
+    // 只有 meta、还没有任何版本的文档是合法状态：选定写作类型（或新建空文档）时
+    // 会先落 meta，正文要等第一次写入才产生 v1。此时 meta.latest 为 0，
+    // 必须直接给 null，不能交给 readVersion —— 它会以「版本号必须是正整数」抛错，
+    // 导致整个画布读不出文档（界面表现为空白）。
+    const latest = Number.isInteger(meta.latest) && meta.latest >= 1 ? await this.readVersion(docId, meta.latest) : null;
     return { meta, latest, workspace: this.workspacePath, stateDir: this.stateDir };
   }
 
@@ -268,6 +272,15 @@ export class DocumentStore {
 
       if (existing !== null && existing.latestHash === hash) {
         const latest = await this.readVersion(docId, existing.latest);
+        // 正文没变就不生成新版本——但**改了标题必须写回**。
+        // 否则「只改标题」会被这里静默吞掉，界面看起来像保存成功、标题却没变。
+        const nextTitle =
+          typeof options.title === 'string' && options.title !== '' ? options.title : existing.title;
+        if (nextTitle !== existing.title) {
+          const meta = { ...existing, title: nextTitle, updatedAt: new Date().toISOString() };
+          await writeJsonAtomic(metaPath, meta);
+          return { meta, latest, unchanged: true, workspace: this.workspacePath, stateDir: this.stateDir };
+        }
         return { meta: existing, latest, unchanged: true, workspace: this.workspacePath, stateDir: this.stateDir };
       }
 
@@ -293,6 +306,13 @@ export class DocumentStore {
         latest: n,
         latestHash: hash,
         versionCount: n,
+        // 写作类型是文档级设置，由 setType 写入、必须跨版本保留。
+        // 这里若重建 meta 时不带上它，每写一次正文就会把用户的类型选择清掉
+        // （界面表现：选好「创意写作」，下一次写入后变回「未指定」）。
+        writingType:
+          typeof options.writingType === 'string' && options.writingType !== ''
+            ? options.writingType
+            : existing?.writingType,
       };
       await writeJsonAtomic(metaPath, meta);
 

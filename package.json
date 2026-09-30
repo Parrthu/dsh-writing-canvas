@@ -10,6 +10,7 @@
     "./client": "./client/client.js",
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json",
+    "./mode/writing": "./src/mode/writing.js",
     "./type/creative": "./src/types/creative.js",
     "./type/gongwen": "./src/types/gongwen.js",
     "./type/video-script": "./src/types/video-script.js",
@@ -19,11 +20,12 @@
   "files": [
     "src",
     "client",
+    "presets",
     "cordis.patch.yml",
     "README.md"
   ],
   "scripts": {
-    "test": "node --test test/store.test.mjs test/routes.test.mjs test/types.test.mjs test/suggestions.test.mjs test/client.test.mjs",
+    "test": "node --test test/store.test.mjs test/routes.test.mjs test/types.test.mjs test/suggestions.test.mjs test/events.test.mjs test/type-prompt.test.mjs test/mode-scope.test.mjs test/client.test.mjs",
     "check": "node --check src/index.js && node --check client/client.js"
   },
   "engines": {
@@ -33,7 +35,10 @@
   "dsh": {
     "manifestVersion": 1,
     "bundle": {
-      "patch": "./cordis.patch.yml"
+      "patch": [
+        "./cordis.patch.yml",
+        "./presets/writing.patch.yml"
+      ]
     },
     "client": {
       "platform": "web"

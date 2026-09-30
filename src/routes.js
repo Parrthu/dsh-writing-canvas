@@ -23,6 +23,7 @@ import { BUILTIN_MARKDOWN_SETS, WorkspaceLibrary } from './library.js';
 import { DocumentStore } from './store.js';
 import { SuggestionStore, applySuggestion } from './suggestions.js';
 import { listTypes } from './types/registry.js';
+import { mergeOverrides } from './prompt-overrides.js';
 
 /** API 前缀。 */
 export const API_PREFIX = '/writing-canvas/api';
@@ -73,6 +74,40 @@ function sendJson(res, status, payload) {
 }
 
 /**
+ * 把一个写作类型的内置定义拼成可编辑的提示词文本。
+ *
+ * 用户在画布上点开「提示词」时看到的就是这段——它同时是**可编辑的初值**：
+ * 改完保存就成了覆盖，注入系统提示时优先于内置定义。
+ *
+ * @param type - 类型定义。
+ * @returns 提示词文本。
+ */
+function defaultTypePromptText(type) {
+  const lines = [`# ${type.label}`, ''];
+  if (typeof type.summary === 'string' && type.summary !== '') lines.push(type.summary, '');
+  const format = type.format ?? { kind: 'markdown' };
+  lines.push(
+    format.kind === 'docx'
+      ? `默认格式：DOCX（规格 ${format.spec ?? '未命名'}）—— 字体、字号、行距必须由格式工具真实写入并回读校验。`
+      : '默认格式：Markdown。',
+    '',
+  );
+  if (Array.isArray(type.mustConfirm) && type.mustConfirm.length > 0) {
+    lines.push('生成前必须确认：', ...type.mustConfirm.map((item) => `- ${item}`), '');
+  }
+  if (Array.isArray(type.constraints) && type.constraints.length > 0) {
+    lines.push('硬约束：', ...type.constraints.map((item, index) => `${index + 1}. ${item}`), '');
+  }
+  if (Array.isArray(type.structure) && type.structure.length > 0) {
+    lines.push('结构骨架：', ...type.structure.map((item) => `- ${item}`), '');
+  }
+  if (Array.isArray(type.checklist) && type.checklist.length > 0) {
+    lines.push('交付前自检：', ...type.checklist.map((item) => `- [ ] ${item}`), '');
+  }
+  return lines.join('\n').trim();
+}
+
+/**
  * 把会话映射为文档 id。
  *
  * 画布是「对话流的一部分」，所以一个会话一份文档。
@@ -109,6 +144,7 @@ export function createApiHandler({
   libraryFor: sharedLibraryFor,
   bus,
   logger,
+  onPromptChanged,
 }) {
   /** 同一工作区复用同一个实例（写入链才有意义）。 */
   const stores = new Map();
@@ -211,6 +247,10 @@ export function createApiHandler({
           release: '0.2.0-rc.2',
           stateDir: config.stateDir,
           constraintsSection: 'writing-canvas:constraints',
+          // 写作提示注入的实际状态。宿主行挂在宿主组合里对**每个会话**都生效，
+          // 所以这里必须能一眼看出它到底是开是关——「所有任务都被当成写作任务」
+          // 就是这么来的。只有写作模式（preset 里的 mode/writing 行）才注入那两段。
+          promptInjection: config.injectPrompt === true ? 'on' : 'off',
           subscribers: bus?.size?.() ?? 0,
         });
         return;
@@ -581,6 +621,63 @@ export function createApiHandler({
       }
 
       // ---- 格式集（Set）：内置 Markdown 体例 + 内置 DOCX 规格 + 用户自定义 ----
+      // ---- 写作类型提示词（用户在画布里点开「提示词」可自行修改）------------
+      //   GET  返回该类型的**当前生效提示词**（用户覆盖优先，否则是内置拼装）
+      //   POST 保存覆盖；text 传空串表示恢复内置
+      if (route === '/type-prompt' && method === 'GET') {
+        const target = await resolveTarget(paramsFromUrl(url));
+        if (target.error !== undefined) {
+          sendJson(res, 400, { error: target.error });
+          return;
+        }
+        const typeId = url.searchParams.get('typeId') ?? '';
+        const type = listTypes().find((item) => item.id === typeId);
+        if (type === undefined) {
+          sendJson(res, 404, { ok: false, error: `没有这个写作类型：${typeId}` });
+          return;
+        }
+        const overrides = await libraryFor(target.workspacePath).listTypePrompts();
+        // 顺手把库里的覆盖灌进共享缓存：用户打开面板时缓存就该是有值的。
+        mergeOverrides(overrides);
+        const override = overrides[typeId];
+        sendJson(res, 200, {
+          ok: true,
+          typeId,
+          label: type.label,
+          // 用户改过就是用户那版，否则是内置拼装出来的默认提示词。
+          text: typeof override === 'string' && override.trim() !== '' ? override : defaultTypePromptText(type),
+          isCustom: typeof override === 'string' && override.trim() !== '',
+        });
+        return;
+      }
+
+      if (route === '/type-prompt' && method === 'POST') {
+        const body = await readJsonBody(req, config.maxDocumentBytes);
+        const target = await resolveTarget(body);
+        if (target.error !== undefined) {
+          sendJson(res, 400, { error: target.error });
+          return;
+        }
+        const typeId = typeof body.typeId === 'string' ? body.typeId : '';
+        if (listTypes().every((item) => item.id !== typeId)) {
+          sendJson(res, 404, { ok: false, error: `没有这个写作类型：${typeId}` });
+          return;
+        }
+        const library = libraryFor(target.workspacePath);
+        const overrides = await library.setTypePrompt(typeId, typeof body.text === 'string' ? body.text : '');
+        // 1) 刷新共享缓存：提示段渲染时读的就是它。
+        mergeOverrides(overrides);
+        // 2) 通知宿主重装那一段——提示段的正文是注册那一刻算好的，不重装不生效。
+        onPromptChanged?.();
+        sendJson(res, 200, {
+          ok: true,
+          typeId,
+          isCustom: overrides[typeId] !== undefined,
+          text: typeof overrides[typeId] === 'string' ? overrides[typeId] : '',
+        });
+        return;
+      }
+
       if (route === '/format-sets' && method === 'GET') {
         const target = await resolveTarget(paramsFromUrl(url));
         const userSets = target.error === undefined ? await libraryFor(target.workspacePath).listSets() : [];

@@ -214,3 +214,53 @@ test('落盘的是真实 JSON 文件，且拒绝路径穿越', async () => {
     assert.equal(assertSafeDocId('s-session-1234_ab.c'), 's-session-1234_ab.c');
   });
 });
+
+// ---- 回归测试：2026-09-30「画布空白」事故的四条根因 --------------------------
+//
+// 背景：磁盘上正文明明在（v1 861 字节），右栏画布却渲染成空状态。
+// 逐层查出来四个各自独立的缺陷，都补在这里，防止再退回去。
+
+test('回归：只有 meta、还没有版本的文档，readDoc 不抛错且 latest 为 null', async () => {
+  await withStore(async (store) => {
+    // 选定写作类型会先落 meta（latest=0），此时还没有任何正文版本。
+    // 曾经这里把 0 交给 readVersion，触发「版本号必须是正整数」抛出，
+    // 导致画布完全读不出文档。
+    await store.setType('doc-a', 'creative');
+    const doc = await store.readDoc('doc-a');
+    assert.notEqual(doc, null);
+    assert.equal(doc.latest, null);
+    assert.equal(doc.meta.writingType, 'creative');
+    assert.equal(doc.meta.latest, 0);
+  });
+});
+
+test('回归：写作类型跨版本保留，不会被 saveDoc 冲掉', async () => {
+  await withStore(async (store) => {
+    await store.setType('doc-a', 'creative');
+    await store.saveDoc('doc-a', '第一版', { source: 'agent' });
+    let doc = await store.readDoc('doc-a');
+    assert.equal(doc.meta.writingType, 'creative', 'v1 之后类型必须还在');
+
+    await store.saveDoc('doc-a', '第二版', { source: 'agent' });
+    doc = await store.readDoc('doc-a');
+    assert.equal(doc.meta.writingType, 'creative', 'v2 之后类型必须还在');
+
+    await store.restoreVersion('doc-a', 1);
+    doc = await store.readDoc('doc-a');
+    assert.equal(doc.meta.writingType, 'creative', '还原之后类型必须还在');
+  });
+});
+
+test('回归：正文未变时改标题要写回（不能静默吞掉）', async () => {
+  await withStore(async (store) => {
+    await store.saveDoc('doc-a', '正文', { title: '未命名文档' });
+    // 内容一模一样，只改标题：会走「unchanged」分支。
+    const again = await store.saveDoc('doc-a', '正文', { title: '那一栏' });
+    assert.equal(again.unchanged, true);
+    assert.equal(again.meta.title, '那一栏');
+    assert.equal(again.latest.n, 1, '只改标题不应产生新版本');
+
+    const doc = await store.readDoc('doc-a');
+    assert.equal(doc.meta.title, '那一栏', '标题必须真的落盘');
+  });
+});

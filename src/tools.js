@@ -119,7 +119,7 @@ export function registerWritingTools({
       render: (_args, value) => textOf(value),
     },
     async execute(_args, exec) {
-      const { docId, workspacePath, store, annotations } = await targetOf(exec);
+      const { docId, workspacePath, store, annotations, suggestions } = await targetOf(exec);
       const doc = await store.readDoc(docId);
       const versions = await store.listVersions(docId);
       // 未处理的批注必须让模型看见——这是「用户要你改这里」的唯一传递路径。
@@ -234,6 +234,15 @@ export function registerWritingTools({
       if (!saved.unchanged) {
         bus?.publishDocChanged?.(docId, { version: saved.latest.n, source: 'agent' });
       }
+      // 「真的在写正文」是调出画布的唯一判据。
+      // 放在这里而不是新会话打开时：新建任务不再无条件弹出侧边画布，
+      // 只有 Agent 确实要写作的那一刻，界面才把画布调到用户面前
+      // （同时开始逐字呈现，用户不用手动开、也不用刷新）。
+      bus?.publishCanvasIntent?.(docId, {
+        reason: 'agent-write',
+        version: saved.latest.n,
+        streaming: !finished,
+      });
 
       return {
         ok: true,

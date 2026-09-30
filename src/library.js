@@ -76,6 +76,49 @@ export class WorkspaceLibrary {
     this.root = join(workspacePath, stateDir, 'library');
     this.setsFile = join(this.root, 'format-sets.json');
     this.typesFile = join(this.root, 'custom-types.json');
+    this.typePromptsFile = join(this.root, 'type-prompts.json');
+  }
+
+  // ------------------------------------------------------------ 写作类型提示词覆盖
+
+  /**
+   * 列出用户改过的写作类型提示词。
+   * @returns { [typeId]: text }
+   */
+  async listTypePrompts() {
+    const rows = await readCollection(this.typePromptsFile, 'prompts');
+    const map = {};
+    for (const row of rows) {
+      if (row !== null && typeof row === 'object' && typeof row.typeId === 'string' && typeof row.text === 'string') {
+        map[row.typeId] = row.text;
+      }
+    }
+    return map;
+  }
+
+  /**
+   * 保存（或清除）某个写作类型的提示词覆盖。
+   *
+   * 用户点开「提示词」自己改的内容存在这里；注入系统提示时优先用它，
+   * 这样用户不必等插件发布就能调整某个文种的约束。
+   * 传空字符串表示**恢复内置**（删掉覆盖）。
+   *
+   * @param typeId - 写作类型 id（内置如 `creative`，自定义如 `custom:xxx`）。
+   * @param text - 覆盖文本；空串表示删除覆盖。
+   * @returns 保存后的覆盖映射。
+   */
+  async setTypePrompt(typeId, text) {
+    const id = String(typeId ?? '').trim();
+    if (id === '') throw new Error('缺少写作类型 id');
+    const rows = await readCollection(this.typePromptsFile, 'prompts');
+    const rest = rows.filter((row) => row === null || typeof row !== 'object' || row.typeId !== id);
+    const value = typeof text === 'string' ? text : '';
+    // 单条上限：提示词再长也不该到几十 KB，超了多半是误粘贴。
+    const next = value.trim() === '' ? rest : [...rest, { typeId: id, text: value.slice(0, 20000), updatedAt: new Date().toISOString() }];
+    await writeJsonAtomic(this.typePromptsFile, { version: 1, prompts: next });
+    const map = {};
+    for (const row of next) map[row.typeId] = row.text;
+    return map;
   }
 
   // ------------------------------------------------------------ 格式集

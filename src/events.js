@@ -97,6 +97,21 @@ export function createEventBus() {
     },
 
     /**
+     * 告诉界面「现在值得把画布调出来」。
+     *
+     * 触发者是**真正开始写正文的那一刻**（Agent 调用 writing_canvas_write），
+     * 不是「新会话被打开」。这样平时新建任务不会再无条件弹出侧边画布，
+     * 只有确实要写作时才出现——模式只是决定要不要自动弹，
+     * 真正的判据是「有没有写作意图」。
+     *
+     * @param docId - 文档标识。
+     * @param detail - 附加上下文（例如触发来源、当前版本号）。
+     */
+    publishCanvasIntent(docId, detail = {}) {
+      publish(docId, { type: 'canvas-intent', docId, ...detail });
+    },
+
+    /**
      * 标记/取消「正在撰写」。
      * @param docId - 文档标识。
      * @param active - 是否正在撰写。

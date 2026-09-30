@@ -35,6 +35,14 @@ window.__ModuleLoader__.load({
     /** 右栏标签页的 kind（按 kind 打开）与注册 id。 */
     const CANVAS_KIND = 'writing-canvas';
     const CANVAS_TAB_ID = 'dsh-writing-canvas';
+    /**
+     * 写作模式的 agent preset id。
+     *
+     * 只有会话跑在这个 preset 下，画布才自动调出；其他模式一律不自动开。
+     * 必须与写作模式预设声明里的 `config.id` 保持一致
+     * （见本插件的 cordis.patch.yml 里 `preset-writing` 那一行）。
+     */
+    const WRITING_PRESET_ID = 'writing';
     /** 「打开写作画布」命令的 id：导览卡片靠它显示平台快捷键。 */
     const OPEN_COMMAND_ID = 'writing.canvas';
     /** 本插件在设置页列表里的条目 id。 */
@@ -46,8 +54,12 @@ window.__ModuleLoader__.load({
     /**
      * 自动开启记录在 localStorage 的前缀：只尝试一次，用户手动关掉后就不再打扰。
      * 末尾带版本号：修复自动开启逻辑后升版，可让旧的失败标记自然作废。
+     *
+     * v2 → v3：判据从「文档有没有正文」改成「会话是不是写作模式」。
+     * 旧版本会在普通任务的会话里记下「已开启」，升版让这些标记一并作废，
+     * 新逻辑才能在所有会话上重新评估一次。
      */
-    const AUTOOPEN_KEY_PREFIX = 'dsh-writing-canvas:autoopen:v2:';
+    const AUTOOPEN_KEY_PREFIX = 'dsh-writing-canvas:autoopen:v3:';
     /** 工作台当前选中文档的记忆键。 */
     const WORKBENCH_SELECTION_KEY = 'dsh-writing-canvas:workbench-doc';
 
@@ -116,10 +128,22 @@ window.__ModuleLoader__.load({
 .wcv-foot { flex: none; display: flex; gap: 10px; align-items: center; padding: 6px 14px;
   border-top: 1px solid var(--dsw-alias-border-l1, rgba(128,128,128,0.28));
   font-size: 11.5px; color: var(--dsw-alias-label-secondary, #6b6b6b); }
-.wcv-typeBar { flex: none; display: flex; align-items: center; gap: 8px; padding: 7px 14px;
-  border-bottom: 1px solid var(--dsw-alias-border-l1, rgba(128,128,128,0.28)); flex-wrap: wrap; }
-.wcv-root--pane .wcv-typeBar { padding: 6px 10px; }
-.wcv-typeLabel { font-size: 12px; color: var(--dsw-alias-label-secondary, #6b6b6b); }
+/* 类型 / 格式集：并进工具栏的 chip 按钮。
+   外观是按钮，底下压着一个透明原生 select——键盘与无障碍能力都不丢。 */
+.wcv-meta { position: relative; display: inline-flex; align-items: center; gap: 4px;
+  font-size: 12px; line-height: 1; height: 26px; padding: 0 9px; border-radius: 999px;
+  cursor: pointer; white-space: nowrap; max-width: 190px;
+  border: 1px solid var(--dsw-alias-border-l1, rgba(128,128,128,0.3));
+  background: var(--dsw-alias-bg-layer-1, rgba(128,128,128,0.06));
+  color: var(--dsw-alias-label-secondary, #6b6b6b); }
+.wcv-meta:hover { background: var(--dsw-alias-bg-layer-2, rgba(128,128,128,0.14));
+  color: var(--dsw-alias-label-primary, #1a1a1a); }
+.wcv-meta[data-set="true"] { color: var(--dsw-alias-brand-primary, #4d6bfe);
+  border-color: var(--dsw-alias-brand-primary, #4d6bfe); font-weight: 600; }
+.wcv-metaText { pointer-events: none; overflow: hidden; text-overflow: ellipsis; }
+.wcv-metaCaret { pointer-events: none; font-size: 9px; opacity: 0.65; }
+.wcv-metaSelect { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0;
+  padding: 0; border: none; opacity: 0; cursor: pointer; appearance: none; }
 .wcv-select { font: inherit; font-size: 12.5px; padding: 3px 8px; border-radius: 6px; cursor: pointer;
   border: 1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.4));
   background: var(--dsw-alias-bg-layer-1, rgba(128,128,128,0.06)); color: inherit; }
@@ -152,6 +176,13 @@ window.__ModuleLoader__.load({
 .wcv-tool[data-active="true"] { background: var(--dsw-alias-bg-layer-2, rgba(128,128,128,0.16));
   color: var(--dsw-alias-label-primary, #1a1a1a); border-color: var(--dsw-alias-border-l2, rgba(128,128,128,0.4)); }
 .wcv-tool--strong { font-weight: 700; }
+.wcv-toolSpacer { flex: 1; }
+/* 工具栏分两行：上行是类型/格式集与状态，下行整行留给格式按钮。
+   这样格式按钮不会被 chip 挤到中间断开。 */
+.wcv-toolbar { flex-direction: column; align-items: stretch; }
+.wcv-toolRow { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; min-width: 0; }
+.wcv-toolRow + .wcv-toolRow { margin-top: 5px; }
+.wcv-root--pane .wcv-toolRow { gap: 3px; }
 .wcv-tool--italic { font-style: italic; }
 .wcv-toolSep { width: 1px; height: 16px; margin: 0 3px;
   background: var(--dsw-alias-border-l1, rgba(128,128,128,0.3)); }
@@ -166,6 +197,18 @@ window.__ModuleLoader__.load({
   white-space: nowrap; }
 .wcv-floatBtn:hover { background: var(--dsw-alias-bg-layer-2, rgba(128,128,128,0.14)); }
 .wcv-floatBtn--ai { color: var(--dsw-alias-brand-primary, #4d6bfe); font-weight: 600; }
+.wcv-floatBtn--primary { background: var(--dsw-alias-brand-primary, #4d6bfe); color: #fff; font-weight: 600; }
+.wcv-floatBtn--primary:hover { filter: brightness(1.06); }
+.wcv-floatBtn:disabled { opacity: 0.4; cursor: default; }
+/* 输入态：先说要求再落批注。原来是 window.prompt —— Electron 不支持，点了没反应。 */
+.wcv-float--input { padding: 4px 6px; gap: 4px; }
+.wcv-floatLabel { font-size: 12px; font-weight: 600; color: var(--dsw-alias-label-secondary, #6b6b6b);
+  white-space: nowrap; }
+.wcv-floatInput { font: inherit; font-size: 12.5px; height: 26px; width: 240px; padding: 0 8px;
+  border-radius: 6px; outline: none; color: inherit;
+  border: 1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.4));
+  background: var(--dsw-alias-bg-layer-1, rgba(128,128,128,0.06)); }
+.wcv-floatInput:focus { border-color: var(--dsw-alias-brand-primary, #4d6bfe); }
 
 /* ---- 正文 + 批注高亮层 ---- */
 .wcv-editorWrap { position: relative; flex: 1; min-height: 0; display: flex; }
@@ -203,6 +246,9 @@ window.__ModuleLoader__.load({
   color: var(--dsw-alias-label-secondary, #6b6b6b); text-decoration: line-through; }
 .wcv-diffSign { flex: none; width: 9px; opacity: 0.7; font-family: ui-monospace, monospace; }
 .wcv-editor--over { position: relative; z-index: 1; background: transparent !important; }
+/* 撰写期间锁定：只读，光标与边框都给出「现在轮不到你改」的信号。 */
+.wcv-editor--locked { cursor: default; caret-color: transparent; border-color: var(--dsw-alias-brand-primary, #4d6bfe) !important; }
+.wcv-editor--locked::selection { background: transparent; }
 
 /* ---- 撰写中 ---- */
 .wcv-writing { display: inline-flex; align-items: center; gap: 7px; padding: 4px 11px;
@@ -262,9 +308,28 @@ window.__ModuleLoader__.load({
   background: transparent; color: var(--dsw-alias-label-secondary, #6b6b6b); }
 .wcv-drawerTab[data-active="true"] { background: var(--dsw-alias-bg-layer-2, rgba(128,128,128,0.16));
   color: var(--dsw-alias-label-primary, #1a1a1a); border-color: var(--dsw-alias-border-l2, rgba(128,128,128,0.45)); }
+/* 有待决定项：用品牌色提示，否则这些小标签用户根本不会点。 */
+.wcv-drawerTab[data-alert="true"] { color: var(--dsw-alias-brand-primary, #4d6bfe); font-weight: 600;
+  border-color: var(--dsw-alias-brand-primary, #4d6bfe); }
+.wcv-drawerTab[data-alert="true"][data-active="false"] { background: color-mix(in srgb, var(--dsw-alias-brand-primary, #4d6bfe) 10%, transparent); }
 .wcv-drawerSpacer { flex: 1; }
 .wcv-drawerMeta { font-size: 11px; color: var(--dsw-alias-label-secondary, #6b6b6b); }
 .wcv-drawerBody { flex: 1; min-height: 0; overflow: auto; padding: 0 10px 10px; }
+/* 提示词面板：用户可自行编辑写作类型的提示词 */
+.wcv-prompt { flex: none; display: flex; flex-direction: column; gap: 6px; padding: 8px 14px 10px;
+  border-bottom: 1px solid var(--dsw-alias-border-l1, rgba(128,128,128,0.28)); }
+.wcv-root--pane .wcv-prompt { padding: 6px 10px 8px; }
+.wcv-promptHead { display: flex; align-items: center; gap: 6px; }
+.wcv-promptTitle { font-size: 12px; font-weight: 600; }
+.wcv-promptText { width: 100%; box-sizing: border-box; min-height: 132px; max-height: 300px; resize: vertical;
+  font: inherit; font-size: 12.5px; line-height: 1.6; padding: 8px 10px; border-radius: 8px; outline: none;
+  color: inherit; background: var(--dsw-alias-bg-layer-1, rgba(128,128,128,0.05));
+  border: 1px solid var(--dsw-alias-border-l1, rgba(128,128,128,0.3)); }
+.wcv-promptText:focus { border-color: var(--dsw-alias-brand-primary, #4d6bfe); }
+.wcv-promptHint { font-size: 11px; color: var(--dsw-alias-label-secondary, #6b6b6b); }
+.wcv-mini--primary { color: var(--dsw-alias-brand-primary, #4d6bfe); font-weight: 600;
+  border-color: var(--dsw-alias-brand-primary, #4d6bfe); }
+.wcv-mini:disabled { opacity: 0.45; cursor: default; }
 /* 开写前的写作模式选择 */
 .wcv-onboard { position: absolute; inset: 0; z-index: 3; display: flex; flex-direction: column;
   align-items: center; justify-content: center; gap: 10px; padding: 20px;
@@ -398,6 +463,16 @@ window.__ModuleLoader__.load({
       const [suggestions, setSuggestions] = React.useState([]);
       const [writing, setWriting] = React.useState({ active: false, startedAt: null, note: '' });
       const [selection, setSelection] = React.useState(null);
+      /**
+       * 正在填写的 AI 选区动作：{ kind, text, start, end } 或 null。
+       *
+       * 为什么不用 window.prompt：**Electron 不支持它**（调用会直接抛错），
+       * 所以原先那四个按钮（改写/扩写/缩短/润色）与「批注」点了毫无反应——
+       * 用户看到的就是「按钮不可用」。改为在浮动工具条内联出输入框。
+       */
+      const [aiAction, setAiAction] = React.useState(null);
+      /** AI 动作输入框里的文字。 */
+      const [aiDraft, setAiDraft] = React.useState('');
       const [sets, setSets] = React.useState([]);
       const [exportSpec, setExportSpec] = React.useState('');
       const [exporting, setExporting] = React.useState(false);
@@ -408,12 +483,38 @@ window.__ModuleLoader__.load({
       const [emptyBlocked, setEmptyBlocked] = React.useState(false);
       /** 界面开关（目前只有开发期交互自检）。 */
       const [uiFlags, setUiFlags] = React.useState({ interactionSelfTest: false, workbenchSelfTest: false });
+      /**
+       * 「提示词」面板：用户点开写作类型的提示词后可以自己改。
+       * promptText 是编辑中的文本，promptSaved 是服务端当前的值（用来判断有没有改动）。
+       */
+      const [promptText, setPromptText] = React.useState('');
+      const [promptSaved, setPromptSaved] = React.useState('');
+      const [promptIsCustom, setPromptIsCustom] = React.useState(false);
+      const [promptBusy, setPromptBusy] = React.useState(false);
 
       // 注意：这两个派生值必须定义在任何引用了它们的 effect **之前**。
       // 之前放在渲染段里，被 effect 的依赖数组引用，触发暂时性死区（TDZ）
       // 导致整个画布渲染崩溃——教训：依赖数组是在渲染期求值的。
       const openCount = annotations.filter((a) => a.status === 'open').length;
       const pendingSuggestions = suggestions.filter((s) => s.status === 'pending').length;
+
+      /**
+       * 新建议一到就把抽屉展开到建议面板。
+       *
+       * 事故复盘：Agent 用 writing_canvas_suggest 提交了 3 条建议，工具返回 ok:true、
+       * 建议也确实落盘了，但用户说「并没有成功」——因为窄栏模式下建议面板默认收起，
+       * 只有一个「建议 3」的小标签，用户根本不知道要点它。
+       * 功能没问题，**看不见等于没做**，所以这里改成自动展开。
+       *
+       * 只在**数量增加**时展开：用户手动收起后不会又被弹开。
+       */
+      const prevPendingRef = React.useRef(0);
+      React.useEffect(() => {
+        if (variant === 'pane' && pendingSuggestions > prevPendingRef.current) {
+          setPaneTab('suggestions');
+        }
+        prevPendingRef.current = pendingSuggestions;
+      }, [pendingSuggestions, variant]);
 
       React.useEffect(() => {
         let cancelled = false;
@@ -540,6 +641,61 @@ window.__ModuleLoader__.load({
        * 把新内容呈现出来：如果是在旧内容尾巴上追加（AI 分段写作的典型形态），
        * 就逐字揭示，做出「正在写」的观感；否则直接替换。
        */
+      /**
+       * 把编辑器和它的高亮镜像层一起滚到底。
+       *
+       * 逐字呈现时，文字在下方不断长出来；不跟着滚的话用户的视野停在开头，
+       * 根本不知道已经写完了。这里在每次推进后把视图拉到底，
+       * 效果就是「看着字一行行打出来」。
+       *
+       * 高亮层是独立的一层（用相同排版镜像正文），必须同步滚动，否则批注色块会和文字错位。
+       */
+      const scrollEditorToEnd = () => {
+        const el = editorRef.current;
+        if (el !== null && el !== undefined) {
+          el.scrollTop = el.scrollHeight;
+        }
+        const layer = highlightRef.current;
+        if (layer !== null && layer !== undefined && el !== null && el !== undefined) {
+          layer.scrollTop = el.scrollTop;
+        }
+      };
+
+      /** 用 rAF 兜一次：setState 之后 DOM 高度才更新，直接读 scrollHeight 会拿到旧值。 */
+      const followWritingTail = () => {
+        scrollEditorToEnd();
+        if (typeof requestAnimationFrame === 'function') {
+          requestAnimationFrame(() => scrollEditorToEnd());
+        }
+      };
+
+      /**
+       * 让高亮镜像层的换行宽度与编辑器完全一致。
+       *
+       * 重影的真正原因：textarea 内容超长时**会出现垂直滚动条并占掉约 15px 宽度**，
+       * 而镜像层是 `overflow: hidden`，不占。两层内容宽度差一个滚动条，换行位置就会
+       * 从某一行起分叉，越往下错得越多——看起来就是正文底部有重影（截图里已确认）。
+       *
+       * 这里把滚动条宽度量出来补到镜像层的内边距上，两层内容盒宽度就相等了。
+       * 必须在内容变化和滚动时都同步：滚动条是随内容出现的。
+       */
+      const syncHighlightMetrics = () => {
+        const el = editorRef.current;
+        const layer = highlightRef.current;
+        if (el === null || el === undefined || layer === null || layer === undefined) return;
+        const inner = layer.firstElementChild;
+        if (inner === null || inner === undefined) return;
+        try {
+          const style = window.getComputedStyle(el);
+          const baseRight = Number.parseFloat(style.paddingRight) || 0;
+          const border = (el.clientLeft || 0) * 2;
+          const scrollbar = Math.max(0, el.offsetWidth - el.clientWidth - border);
+          inner.style.paddingRight = `${baseRight + scrollbar}px`;
+        } catch {
+          // 量不到就不补：宁可保持原样，也不要抛错打断渲染。
+        }
+      };
+
       const revealContent = React.useCallback(
         (next) => {
           const previous = textRef.current;
@@ -551,16 +707,29 @@ window.__ModuleLoader__.load({
             revealTimerRef.current = setInterval(() => {
               cursor = Math.min(next.length, cursor + step);
               setText(next.slice(0, cursor));
+              // 每推进一格就把视野拉到底——撰写中的焦点跟随。
+              followWritingTail();
+              syncHighlightMetrics();
               if (cursor >= next.length) stopReveal();
             }, 16);
             return;
           }
           setText(next);
+          followWritingTail();
         },
         [stopReveal],
       );
 
       React.useEffect(() => stopReveal, [stopReveal]);
+
+      // 正文一变就重算镜像层的换行宽度：内容长短决定 textarea 有没有滚动条，
+      // 不同步就会出现两层换行位置分叉（正文底部重影的根因）。
+      React.useEffect(() => {
+        syncHighlightMetrics();
+        if (typeof requestAnimationFrame === 'function') {
+          requestAnimationFrame(() => syncHighlightMetrics());
+        }
+      }, [text]);
 
       /**
        * 界面自检：把「实际渲染出了什么」回报给宿主。
@@ -601,6 +770,37 @@ window.__ModuleLoader__.load({
             rootHeight: Math.round(root.getBoundingClientRect().height),
             writingPill: one('.wcv-writing') !== null,
             bannerText: one('.wcv-banner') === null ? null : one('.wcv-banner').textContent.slice(0, 80),
+            // 2026-10-01 界面重构的自检项：窄栏下抬头与底栏都必须不存在，
+            // 类型/格式集必须已经并成工具栏上的 chip。
+            headerPresent: one('.wcv-header') !== null,
+            footPresent: one('.wcv-foot') !== null,
+            metaChips: all('.wcv-meta').length,
+            metaSelects: all('.wcv-metaSelect').length,
+            promptPanel: one('.wcv-prompt') !== null,
+            // 工具栏排版自检：按钮分布在第几行、有没有溢出、正文两层是否错位。
+            toolbarHeight: one('.wcv-toolbar') === null ? -1 : Math.round(one('.wcv-toolbar').getBoundingClientRect().height),
+            toolRows: [...all('.wcv-tool')].reduce((acc, node) => {
+              const top = Math.round(node.getBoundingClientRect().top);
+              acc[top] = (acc[top] ?? 0) + 1;
+              return acc;
+            }, {}),
+            toolLabels: [...all('.wcv-tool')].map((node) => node.textContent).join('|'),
+            toolbarOverflow: one('.wcv-toolbar') === null
+              ? -1
+              : one('.wcv-toolbar').scrollWidth - one('.wcv-toolbar').clientWidth,
+            scrollSkew:
+              editor === null || one('.wcv-highlight') === null
+                ? -1
+                : Math.abs(editor.scrollTop - one('.wcv-highlight').scrollTop),
+            editorScrollTop: editor === null ? -1 : Math.round(editor.scrollTop),
+            editorScrollHeight: editor === null ? -1 : Math.round(editor.scrollHeight),
+            // 两层的内容盒宽度差：必须为 0，否则批注色块会与文字错位。
+            editorContentWidth: editor === null ? -1 : Math.round(editor.clientWidth),
+            highlightPadRight:
+              one('.wcv-highlightInner') === null
+                ? -1
+                : Math.round(Number.parseFloat(window.getComputedStyle(one('.wcv-highlightInner')).paddingRight) || 0),
+            scrollbarWidth: editor === null ? -1 : Math.round(editor.offsetWidth - editor.clientWidth),
           });
 
           // 开发期交互自检：程序化地选中一段文字，确认浮动工具条真的出现。
@@ -738,7 +938,11 @@ window.__ModuleLoader__.load({
               return;
             }
             if (payload?.type === 'doc-changed') void refresh();
-            else if (payload?.type === 'writing') {
+            else if (payload?.type === 'canvas-intent') {
+              // Agent 真的开始写正文了：把画布调到用户面前。
+              // 这是「新建任务不再无条件弹画布」之后唯一的自动开启来源。
+              openBeside('agent-write');
+            } else if (payload?.type === 'writing') {
               setWriting({
                 active: payload.active === true,
                 startedAt: payload.startedAt ?? null,
@@ -838,6 +1042,72 @@ window.__ModuleLoader__.load({
         } catch (error) {
           setStatus('error');
           setMessage(`创建批注失败：${String(error)}`);
+        }
+      };
+
+      /**
+       * 提交浮动工具条上的 AI 选区动作。
+       *
+       * 选中文字 + 写明要求 = 一条带 anchor 的批注（author=user）。AI 用
+       * writing_canvas_annotate 读走它并按位置改，改完把批注标为已处理。
+       *
+       * 这里是 window.prompt 的替代路径：Electron 不支持 prompt，
+       * 原来那四个 AI 按钮因此点了没反应。
+       */
+      const submitAiAction = async () => {
+        if (aiAction === null) return;
+        const instruction = aiDraft.trim();
+        if (instruction === '') return;
+        const range = selection === null ? undefined : { start: selection.start, end: selection.end };
+        const quote = selection?.text ?? '';
+        setAiAction(null);
+        setAiDraft('');
+        setSelection(null);
+        await addAnnotation(aiAction.kind, instruction, quote, range);
+      };
+
+      /**
+       * 打开「提示词」面板时把该类型的当前生效提示词拉下来。
+       * 用户改过就是他那版，否则是内置拼装出来的默认值——都能继续编辑。
+       */
+      const loadTypePrompt = async (typeId) => {
+        if (typeof typeId !== 'string' || typeId === '') return;
+        try {
+          const params = new URLSearchParams({ ...Object.fromEntries(targetQuery(target)), typeId });
+          const { ok, data } = await apiGet('/type-prompt', params);
+          if (!ok || data?.ok !== true) throw new Error(data?.error ?? '读取失败');
+          setPromptText(data.text ?? '');
+          setPromptSaved(data.text ?? '');
+          setPromptIsCustom(data.isCustom === true);
+        } catch (error) {
+          setMessage(`读取提示词失败：${String(error)}`);
+        }
+      };
+
+      /** 保存用户改过的提示词；传空串即恢复内置。 */
+      const saveTypePrompt = async (text) => {
+        if (currentTypeId === '') return;
+        setPromptBusy(true);
+        try {
+          const { ok, data } = await apiPost('/type-prompt', {
+            ...targetBody(target),
+            typeId: currentTypeId,
+            text,
+          });
+          if (!ok || data?.ok !== true) throw new Error(data?.error ?? '保存失败');
+          setPromptIsCustom(data.isCustom === true);
+          if (data.isCustom === true) {
+            setPromptSaved(promptText);
+            setMessage('已保存。这个写作类型的提示词现在用你的版本，Agent 已经能按它写作。');
+          } else {
+            // 恢复内置：把面板内容重新拉成内置版，避免显示与生效不一致。
+            await loadTypePrompt(currentTypeId);
+            setMessage('已恢复内置提示词。');
+          }
+        } catch (error) {
+          setMessage(`保存提示词失败：${String(error)}`);
+        } finally {
+          setPromptBusy(false);
         }
       };
 
@@ -1042,6 +1312,10 @@ window.__ModuleLoader__.load({
 
       /** 输入处理：内容变了才标记为待保存。 */
       const onChange = (event) => {
+        // 撰写期间编辑框锁定为只读：Agent 正在逐字往这里写，
+        // 双方同时写同一份正文必然冲突（客户端会拒绝用远端内容覆盖本地未保存改动，
+        // 结果就是「边写边闪、内容对不上」）。写入结束即恢复可编辑。
+        if (writing.active) return;
         const next = event.target.value;
         setText(next);
         if (next.trim() !== '') setEmptyBlocked(false);
@@ -1254,17 +1528,30 @@ window.__ModuleLoader__.load({
               ),
             );
 
+      // 右栏（pane）是多标签页形态：标签本身已经写着「写作画布」，
+      // 画布内再顶一个同名抬头 + 一行文档副标题就是重复且诡异。
+      // 所以 pane 不渲染抬头，状态徽标并入下面工具栏的右端。
+      // 整页工作台（workbench）另有形态，保留标题。
+      const pill = h(
+        'span',
+        { className: 'wcv-pill' },
+        h('span', { className: 'wcv-dot', 'data-state': state }),
+        stateText,
+      );
+
       return h(
         'div',
         { className: `wcv-root wcv-root--${variant}`, ref: rootRef },
-        h(
-          'div',
-          { className: 'wcv-header' },
-          h('div', { className: 'wcv-title' }, variant === 'pane' ? '写作画布' : '写作工作台'),
-          h('div', { className: 'wcv-sub' }, variant === 'pane' ? title : `${title} · ${doc?.workspace ?? ''}`),
-          props.headerExtra === undefined ? null : props.headerExtra(),
-          h('div', { className: 'wcv-pill' }, h('span', { className: 'wcv-dot', 'data-state': state }), stateText),
-        ),
+        variant === 'pane'
+          ? null
+          : h(
+              'div',
+              { className: 'wcv-header' },
+              h('div', { className: 'wcv-title' }, '写作工作台'),
+              h('div', { className: 'wcv-sub' }, `${title} · ${doc?.workspace ?? ''}`),
+              props.headerExtra === undefined ? null : props.headerExtra(),
+              pill,
+            ),
 
         emptyBlocked
           ? h(
@@ -1344,129 +1631,63 @@ window.__ModuleLoader__.load({
           ? h('div', { className: `wcv-banner${status === 'error' ? ' wcv-banner--error' : ''}` }, message)
           : null,
 
-        // 写作类型选择条：用户可以直接指定文种，Agent 也能通过工具读到这里的选择。
-        h(
-          'div',
-          { className: 'wcv-typeBar' },
-          h('span', { className: 'wcv-typeLabel' }, '写作类型'),
-          h(
-            'select',
-            {
-              className: 'wcv-select',
-              value: currentTypeId,
-              onChange: (event) => void chooseType(event.target.value),
-            },
-            h('option', { value: '' }, '未指定'),
-            ...types.map((type) => h('option', { key: type.id, value: type.id }, type.label)),
-          ),
-          currentType !== undefined
-            ? h(
-                'span',
-                { className: 'wcv-formatTag' },
-                currentType.format?.kind === 'docx'
-                  ? `DOCX · ${currentType.format.spec ?? '未命名规格'}`
-                  : 'Markdown',
-              )
-            : null,
-          currentType !== undefined && (currentType.constraints?.length ?? 0) > 0
-            ? h(
-                'button',
-                { className: 'wcv-btn', onClick: () => setShowConstraints((v) => !v) },
-                showConstraints ? '收起硬约束' : `查看硬约束（${currentType.constraints.length}）`,
-              )
-            : null,
-          types.length === 0
-            ? h('span', { className: 'wcv-formatTag' }, '尚未启用任何写作类型插件')
-            : null,
-
-        ),
-
-        // 第二行：格式集（Set）+ 导出。文字尽量少，动作放图标里。
-        h(
-          'div',
-          { className: 'wcv-typeBar' },
-          h('span', { className: 'wcv-typeLabel', title: '格式集：Markdown 体例或 DOCX 版式' }, '格式集'),
-          h(
-            'select',
-            {
-              className: 'wcv-select',
-              value: currentSetId,
-              title: currentSet === undefined ? '选择格式集' : currentSet.description,
-              onChange: (event) => {
-                setExportSpec(event.target.value);
-                setExportResult(null);
-              },
-            },
-            ...sets.map((item) =>
-              h(
-                'option',
-                { key: item.id, value: item.id },
-                `${item.kind === 'docx' ? 'DOCX' : 'MD'} · ${item.name}${item.source === 'user' ? '（我的）' : ''}`,
-              ),
-            ),
-          ),
-          currentSet !== undefined && currentSet.source === 'user'
-            ? iconButton({
-                icon: IconTrash,
-                title: '删除这个格式集',
-                onClick: async () => {
-                  await apiPost('/format-sets/delete', { ...targetBody(target), id: currentSet.id });
-                  setExportSpec('');
-                  setSets((list) => list.filter((item) => item.id !== currentSet.id));
-                },
-              })
-            : null,
-          currentSet !== undefined && currentSet.kind === 'docx'
-            ? iconButton({
-                icon: exporting ? IconRefresh : IconDownload,
-                title: exporting ? '正在套用…' : '套用这个版式并导出 DOCX（生成后会回读校验）',
-                primary: true,
-                disabled: exporting,
-                onClick: () => void applyFormatSpec(),
-              })
-            : iconButton({
-                icon: IconCheck,
-                title: '把这个 Markdown 体例设为本文体例',
-                primary: true,
-                disabled: currentSetId === '',
-                onClick: () => void applyFormatSpec(),
-              }),
-          h(
-            'button',
-            {
-              className: 'wcv-mini',
-              title: '告诉我你想要的格式，我把它做成一个可复用的 Set',
-              onClick: () =>
-                setMessage(
-                  '想新建格式集？直接在对话里告诉我：' +
-                    '「做成格式集：正文小四宋体、标题黑体、行距 1.5 倍」或「按这个模板的样式做一套」。' +
-                    '我会整理成 Set 存进这个工作区，之后在这里一键选用。',
-                ),
-            },
-            '+ Set',
-          ),
-          exportResult !== null
-            ? h(
-                'span',
-                { className: 'wcv-formatTag' },
-                exportResult.ok === true
-                  ? `✓ 校验 ${exportResult.verification.total}/${exportResult.verification.total}`
-                  : `✗ 校验未过${exportResult.verification ? ` (${exportResult.verification.failed}/${exportResult.verification.total})` : ''}`,
-              )
-            : null,
-        ),
-
+        // 提示词面板：不再是只读的硬约束清单，改成**可编辑**——
+        // 用户点开就能改这个写作类型的提示词，保存后立刻对它生效。
         showConstraints && currentType !== undefined
           ? h(
               'div',
-              { className: 'wcv-banner' },
-              (currentType.mustConfirm?.length ?? 0) > 0
-                ? h('div', null, `生成前必须确认：${currentType.mustConfirm.join('、')}`)
-                : null,
+              { className: 'wcv-prompt' },
               h(
-                'ol',
-                { className: 'wcv-constraintList' },
-                ...(currentType.constraints ?? []).map((item, index) => h('li', { key: index }, item)),
+                'div',
+                { className: 'wcv-promptHead' },
+                h('span', { className: 'wcv-promptTitle' }, `${currentType.label} · 提示词`),
+                promptIsCustom
+                  ? h('span', { className: 'wcv-formatTag' }, '已用你的版本')
+                  : h('span', { className: 'wcv-formatTag' }, '内置版本'),
+                h('span', { className: 'wcv-toolSpacer' }),
+                h(
+                  'button',
+                  {
+                    className: 'wcv-mini',
+                    title: '放弃当前改动，重新载入生效中的提示词',
+                    onClick: () => {
+                      setPromptText(promptSaved);
+                    },
+                  },
+                  '撤销改动',
+                ),
+                h(
+                  'button',
+                  {
+                    className: 'wcv-mini',
+                    title: '删掉你的覆盖，回到内置提示词',
+                    disabled: promptBusy || !promptIsCustom,
+                    onClick: () => void saveTypePrompt(''),
+                  },
+                  '恢复内置',
+                ),
+                h(
+                  'button',
+                  {
+                    className: 'wcv-mini wcv-mini--primary',
+                    disabled: promptBusy || promptText === promptSaved,
+                    title: '保存后 Agent 立刻按这版提示词写作',
+                    onClick: () => void saveTypePrompt(promptText),
+                  },
+                  promptBusy ? '保存中…' : '保存',
+                ),
+              ),
+              h('textarea', {
+                className: 'wcv-promptText',
+                value: promptText,
+                spellCheck: false,
+                placeholder: '这个写作类型的提示词。写清约束、必确认要素、结构骨架与自检清单。',
+                onChange: (event) => setPromptText(event.target.value),
+              }),
+              h(
+                'div',
+                { className: 'wcv-promptHint' },
+                '这段提示词只在写作模式下注入，且优先级高于内置约束。清空并保存即恢复内置。',
               ),
             )
           : null,
@@ -1485,6 +1706,149 @@ window.__ModuleLoader__.load({
             h(
               'div',
               { className: 'wcv-toolbar' },
+              // 第一行：类型 / 提示词 / 格式集 + 导出动作，右端是撰写中与状态。
+              // 明确分两行，是为了不让格式按钮被 chip 挤到中间断掉——
+              // 之前 13 个格式按钮被拆成 5+8，换行位置看着很乱。
+              h(
+                'div',
+                { className: 'wcv-toolRow' },
+              // ---- 类型 / 格式集：做成按钮。chip 外观 + 覆盖其上的透明原生 select：
+              //      看起来是按钮，行为仍是原生下拉（键盘、无障碍都不丢）。
+              h(
+                'label',
+                {
+                  className: 'wcv-meta',
+                  'data-set': currentTypeId === '' ? 'false' : 'true',
+                  title:
+                    currentType === undefined
+                      ? '选择写作类型：选定后我会先问清必确认要素再动笔'
+                      : `${currentType.summary ?? ''}${
+                          (currentType.mustConfirm?.length ?? 0) > 0
+                            ? `\n生成前会确认：${currentType.mustConfirm.join('、')}`
+                            : ''
+                        }`,
+                },
+                h('span', { className: 'wcv-metaText' }, currentType?.label ?? '未指定类型'),
+                h('span', { className: 'wcv-metaCaret' }, '▾'),
+                h(
+                  'select',
+                  {
+                    className: 'wcv-metaSelect wcv-select',
+                    value: currentTypeId,
+                    onChange: (event) => void chooseType(event.target.value),
+                  },
+                  h('option', { value: '' }, '未指定'),
+                  ...types.map((type) => h('option', { key: type.id, value: type.id }, type.label)),
+                ),
+              ),
+              currentType !== undefined && currentType.constraints?.length
+                ? h(
+                    'button',
+                    {
+                      className: 'wcv-meta',
+                      'data-set': promptIsCustom ? 'true' : 'false',
+                      title: '查看并编辑这个写作类型的提示词',
+                      onClick: () => {
+                        const next = !showConstraints;
+                        setShowConstraints(next);
+                        // 展开时才去拉内容：面板关闭时不浪费一次请求。
+                        if (next) void loadTypePrompt(currentTypeId);
+                      },
+                    },
+                    h('span', { className: 'wcv-metaText' }, '提示词'),
+                  )
+                : null,
+              h(
+                'label',
+                {
+                  className: 'wcv-meta',
+                  title: currentSet === undefined ? '选择格式集' : currentSet.description,
+                },
+                h(
+                  'span',
+                  { className: 'wcv-metaText' },
+                  `${currentSet?.kind === 'docx' ? 'DOCX' : 'MD'} · ${currentSet?.name ?? '默认'}`,
+                ),
+                h('span', { className: 'wcv-metaCaret' }, '▾'),
+                h(
+                  'select',
+                  {
+                    className: 'wcv-metaSelect wcv-select',
+                    value: currentSetId,
+                    onChange: (event) => {
+                      setExportSpec(event.target.value);
+                      setExportResult(null);
+                    },
+                  },
+                  ...sets.map((item) =>
+                    h(
+                      'option',
+                      { key: item.id, value: item.id },
+                      `${item.kind === 'docx' ? 'DOCX' : 'MD'} · ${item.name}${item.source === 'user' ? '（我的）' : ''}`,
+                    ),
+                  ),
+                ),
+              ),
+              currentSet !== undefined && currentSet.kind === 'docx'
+                ? iconButton({
+                    icon: exporting ? IconRefresh : IconDownload,
+                    title: exporting ? '正在套用…' : '套用这个版式并导出 DOCX（生成后会回读校验）',
+                    primary: true,
+                    disabled: exporting,
+                    onClick: () => void applyFormatSpec(),
+                  })
+                : iconButton({
+                    icon: IconCheck,
+                    title: '把这个 Markdown 体例设为本文体例',
+                    primary: true,
+                    disabled: currentSetId === '',
+                    onClick: () => void applyFormatSpec(),
+                  }),
+              currentSet !== undefined && currentSet.source === 'user'
+                ? iconButton({
+                    icon: IconTrash,
+                    title: '删除这个格式集',
+                    onClick: async () => {
+                      await apiPost('/format-sets/delete', { ...targetBody(target), id: currentSet.id });
+                      setExportSpec('');
+                      setSets((list) => list.filter((item) => item.id !== currentSet.id));
+                    },
+                  })
+                : null,
+              h(
+                'button',
+                {
+                  className: 'wcv-mini',
+                  title: '告诉我你想要的格式，我把它做成一个可复用的格式集',
+                  onClick: () =>
+                    setMessage(
+                      '想新建格式集？直接在对话里告诉我：' +
+                        '「做成格式集：正文小四宋体、标题黑体、行距 1.5 倍」或「按这个模板的样式做一套」。' +
+                        '我会整理成 Set 存进这个工作区，之后在这里一键选用。',
+                    ),
+                },
+                '+ Set',
+              ),
+              exportResult !== null
+                ? h(
+                    'span',
+                    { className: 'wcv-formatTag' },
+                    exportResult.ok === true
+                      ? `✓ 校验 ${exportResult.verification.total}/${exportResult.verification.total}`
+                      : `✗ 校验未过${exportResult.verification ? ` (${exportResult.verification.failed}/${exportResult.verification.total})` : ''}`,
+                  )
+                : null,
+              // 第一行右端：撰写中指示 + 状态徽标（pane 没有抬头，状态落在这里）。
+              h('span', { className: 'wcv-toolSpacer' }),
+              writing.active
+                ? h('span', { className: 'wcv-writing' }, h('span', { className: 'wcv-writingDot' }), '撰写中…')
+                : null,
+              pill,
+              ),
+              // 第二行：纯格式按钮。整行留给它，换行位置就稳定了。
+              h(
+                'div',
+                { className: 'wcv-toolRow wcv-toolRow--formats' },
               ...[
                 ['h1', 'H1', '一级标题'],
                 ['h2', 'H2', '二级标题'],
@@ -1519,14 +1883,7 @@ window.__ModuleLoader__.load({
                       item[1],
                     ),
               ),
-              writing.active
-                ? h(
-                    'span',
-                    { className: 'wcv-writing', style: { marginLeft: 'auto' } },
-                    h('span', { className: 'wcv-writingDot' }),
-                    '撰写中…',
-                  )
-                : null,
+              ),
             ),
 
             h(
@@ -1615,15 +1972,22 @@ window.__ModuleLoader__.load({
                     )
                   : null,
                 h('textarea', {
-                  className: 'wcv-editor wcv-editor--over',
+                  className: `wcv-editor wcv-editor--over${writing.active ? ' wcv-editor--locked' : ''}`,
                   ref: editorRef,
                   value: text,
                   spellCheck: false,
-                  placeholder: '在这里开始写，或让 Agent 把草稿写进这份文档……',
+                  // 撰写期间锁为只读：避免与 Agent 的流式写入互相覆盖。
+                  readOnly: writing.active === true,
+                  'aria-readonly': writing.active === true ? 'true' : 'false',
+                  placeholder: writing.active
+                    ? 'Agent 正在写入…'
+                    : '在这里开始写，或让 Agent 把草稿写进这份文档……',
                   onChange,
                   onScroll: (event) => {
                     const layer = highlightRef.current;
                     if (layer !== null) layer.scrollTop = event.target.scrollTop;
+                    // 滚动条是随内容出现的，滚动时再量一次最稳。
+                    syncHighlightMetrics();
                   },
                   onSelect: syncSelection,
                   onKeyUp: syncSelection,
@@ -1635,64 +1999,115 @@ window.__ModuleLoader__.load({
                   ? h(
                       'div',
                       {
-                        className: 'wcv-float',
+                        className: `wcv-float${aiAction !== null ? ' wcv-float--input' : ''}`,
                         style: {
                           top: `${Math.max(2, selection.top - 42)}px`,
                           left: `${Math.max(4, selection.left)}px`,
                         },
                         onMouseDown: (event) => event.preventDefault(),
                       },
-                      ...['bold', 'italic', 'strike', 'code'].map((kind) =>
-                        h(
-                          'button',
-                          {
-                            key: kind,
-                            className: 'wcv-floatBtn',
-                            title: { bold: '加粗', italic: '斜体', strike: '删除线', code: '行内代码' }[kind],
-                            onClick: () => applyFormat(kind),
-                          },
-                          { bold: 'B', italic: 'I', strike: 'S', code: '</>' }[kind],
-                        ),
-                      ),
-                      h('span', { className: 'wcv-toolSep' }),
-                      ...['rewrite', 'expand', 'shorten', 'polish'].map((kind) =>
-                        h(
-                          'button',
-                          {
-                            key: kind,
-                            className: 'wcv-floatBtn wcv-floatBtn--ai',
-                            onClick: () => {
-                              const value = window.prompt(
-                                `对选中内容「${ANNOTATION_KIND_LABEL[kind]}」——请写下你的要求：`,
-                                '',
-                              );
-                              if (value === null) return;
-                              void addAnnotation(kind, value, selection.text, {
-                                start: selection.start,
-                                end: selection.end,
-                              });
-                              setSelection(null);
-                            },
-                          },
-                          ANNOTATION_KIND_LABEL[kind],
-                        ),
-                      ),
-                      h(
-                        'button',
-                        {
-                          className: 'wcv-floatBtn',
-                          onClick: () => {
-                            const value = window.prompt('批注内容：', '');
-                            if (value === null) return;
-                            void addAnnotation('comment', value, selection.text, {
-                              start: selection.start,
-                              end: selection.end,
-                            });
-                            setSelection(null);
-                          },
-                        },
-                        '批注',
-                      ),
+                      // 输入态：AI 动作先问要求，再落成批注。
+                      aiAction !== null
+                        ? [
+                            h(
+                              'span',
+                              { key: 'label', className: 'wcv-floatLabel' },
+                              `${ANNOTATION_KIND_LABEL[aiAction.kind] ?? aiAction.kind}：`,
+                            ),
+                            h('input', {
+                              key: 'input',
+                              className: 'wcv-floatInput',
+                              autoFocus: true,
+                              value: aiDraft,
+                              placeholder:
+                                aiAction.kind === 'comment'
+                                  ? '写下你的批注…'
+                                  : '写下要求，例如「更克制，去掉形容词」…',
+                              onChange: (event) => setAiDraft(event.target.value),
+                              onKeyDown: (event) => {
+                                if (event.key === 'Enter') {
+                                  event.preventDefault();
+                                  void submitAiAction();
+                                } else if (event.key === 'Escape') {
+                                  event.preventDefault();
+                                  setAiAction(null);
+                                  setAiDraft('');
+                                }
+                              },
+                            }),
+                            h(
+                              'button',
+                              {
+                                key: 'ok',
+                                className: 'wcv-floatBtn wcv-floatBtn--primary',
+                                title: '确定（回车）',
+                                disabled: aiDraft.trim() === '',
+                                onClick: () => void submitAiAction(),
+                              },
+                              '确定',
+                            ),
+                            h(
+                              'button',
+                              {
+                                key: 'cancel',
+                                className: 'wcv-floatBtn',
+                                title: '取消（Esc）',
+                                onClick: () => {
+                                  setAiAction(null);
+                                  setAiDraft('');
+                                },
+                              },
+                              '取消',
+                            ),
+                          ]
+                        : [
+                            ...[
+                              ['bold', 'B', '加粗'],
+                              ['italic', 'I', '斜体'],
+                              ['strike', 'S', '删除线'],
+                              ['code', '</>', '行内代码'],
+                            ].map(([kind, glyph, label]) =>
+                              h(
+                                'button',
+                                {
+                                  key: kind,
+                                  className: 'wcv-floatBtn',
+                                  title: label,
+                                  onClick: () => applyFormat(kind),
+                                },
+                                glyph,
+                              ),
+                            ),
+                            h('span', { key: 'sep', className: 'wcv-toolSep' }),
+                            ...['rewrite', 'expand', 'shorten', 'polish'].map((kind) =>
+                              h(
+                                'button',
+                                {
+                                  key: kind,
+                                  className: 'wcv-floatBtn wcv-floatBtn--ai',
+                                  title: `让 AI 对选中内容${ANNOTATION_KIND_LABEL[kind]}（会先问你要求）`,
+                                  onClick: () => {
+                                    setAiDraft('');
+                                    setAiAction({ kind });
+                                  },
+                                },
+                                ANNOTATION_KIND_LABEL[kind],
+                              ),
+                            ),
+                            h(
+                              'button',
+                              {
+                                key: 'comment',
+                                className: 'wcv-floatBtn wcv-floatBtn--ai',
+                                title: '在这段文字上留一条批注，AI 读到后会处理',
+                                onClick: () => {
+                                  setAiDraft('');
+                                  setAiAction({ kind: 'comment' });
+                                },
+                              },
+                              '批注',
+                            ),
+                          ],
                     )
                   : null,
               ),
@@ -1736,6 +2151,9 @@ window.__ModuleLoader__.load({
                   {
                     className: 'wcv-drawerTab',
                     'data-active': paneTab === 'suggestions' ? 'true' : 'false',
+                    // 有待决定的新建议时高亮，否则用户根本注意不到这个标签。
+                    'data-alert': pendingSuggestions > 0 ? 'true' : 'false',
+                    title: pendingSuggestions > 0 ? 'AI 提交了修改建议，点开逐条决定接受或拒绝' : '修改建议',
                     onClick: () => setPaneTab((current) => (current === 'suggestions' ? 'none' : 'suggestions')),
                   },
                   `建议 ${pendingSuggestions}${suggestions.length > pendingSuggestions ? `/${suggestions.length}` : ''}`,
@@ -1745,6 +2163,8 @@ window.__ModuleLoader__.load({
                   {
                     className: 'wcv-drawerTab',
                     'data-active': paneTab === 'annotations' ? 'true' : 'false',
+                    'data-alert': openCount > 0 ? 'true' : 'false',
+                    title: openCount > 0 ? '有未处理的批注' : '批注',
                     onClick: () => setPaneTab((current) => (current === 'annotations' ? 'none' : 'annotations')),
                   },
                   `批注 ${openCount}/${annotations.length}`,
@@ -1775,17 +2195,22 @@ window.__ModuleLoader__.load({
             )
           : null,
 
-        h(
-          'div',
-          { className: 'wcv-foot' },
-          h('span', null, `文档 ${doc?.docId ?? '—'}`),
-          h('span', null, `工作区 ${doc?.workspace ?? '—'}`),
-          h(
-            'span',
-            { style: { marginLeft: 'auto' } },
-            doc?.meta?.updatedAt !== undefined ? `最近更新 ${formatTime(doc.meta.updatedAt)}` : '',
-          ),
-        ),
+        // 底栏：pane 下整条不渲染——右下角已经有多标签页和抽屉，再挂一行
+        // 「文档 s-session-xxxx 工作区 /Users/... 最近更新 …」又长又没信息量。
+        // workbench 是整页形态，留一行极简信息，长串（docId / 工作区路径）收进悬浮提示。
+        variant === 'pane'
+          ? null
+          : h(
+              'div',
+              {
+                className: 'wcv-foot',
+                title: `${doc?.docId ?? ''}\n${doc?.workspace ?? ''}`,
+              },
+              doc?.meta?.updatedAt !== undefined
+                ? h('span', null, `最近更新 ${formatTime(doc.meta.updatedAt)}`)
+                : null,
+              h('span', { style: { marginLeft: 'auto' } }, `${text.length} 字`),
+            ),
       );
     }
 
@@ -2559,6 +2984,64 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * 读一个会话的 agent preset id。
+     *
+     * 只有读到 `writing` 才允许自动调出画布，所以这个函数决定了两件事：
+     * 「写作模式下画布自动出现」和「其他模式绝不自动出现」。
+     * 取不到就返回 undefined——调用方据此 fail closed（不自动开）。
+     *
+     * 数据来源是会话投影 `projectionValues.agentPreset`（与官方
+     * dsh-client-ui-agent-preset 的 AgentPresetLabel 读的是同一个字段）。
+     * 取值走多条退路：不同版本里服务可能是 ctx.get('sessions')，也可能是
+     * 通过槽位 hooks 注入进来的 hook 源。
+     *
+     * 抽成纯函数是为了能被单测直接覆盖——这段逻辑挂一次，用户看到的就是
+     * 「任务又自己变成写作了」，不能只靠肉眼看代码。
+     *
+     * @param options.sessions - sessions 服务（可选）。
+     * @param options.useSessions - 槽位注入的 hook 选择器（可选）。
+     * @param options.sessionId - 目标会话 id。
+     * @returns preset id，或 undefined。
+     */
+    function readAgentPresetId({ sessions, useSessions, sessionId }) {
+      if (typeof sessionId !== 'string' || sessionId === '') return undefined;
+
+      /** 从 state 形状里取出 preset id。 */
+      const fromState = (state) => {
+        const value = state?.byId?.[sessionId]?.projectionValues?.agentPreset;
+        return typeof value === 'string' && value !== '' ? value : undefined;
+      };
+
+      // 退路 1：槽位注入的 hook 选择器（官方插件用的就是这个形状）。
+      if (typeof useSessions === 'function') {
+        try {
+          const value = fromState(useSessions((state) => state));
+          if (value !== undefined) return value;
+        } catch {
+          // hook 在渲染期之外调用可能抛错，落到下一条退路。
+        }
+      }
+
+      // 退路 2：服务上的 list store。
+      try {
+        const value = fromState(sessions?.list?.getSnapshot?.());
+        if (value !== undefined) return value;
+      } catch {
+        // 忽略，继续尝试下一条。
+      }
+
+      // 退路 3：服务本身可能直接是 store（带 getState）。
+      try {
+        const value = fromState(sessions?.getState?.());
+        if (value !== undefined) return value;
+      } catch {
+        // 忽略。
+      }
+
+      return undefined;
+    }
+
+    /**
      * 生成"自动开启画布"的无渲染组件。
      *
      * 挂在 conversation.composer.dock（会话级槽位）上：只要会话在屏幕上，它就在。
@@ -2584,13 +3067,51 @@ window.__ModuleLoader__.load({
             return undefined;
           }
 
+          // 只有**写作模式**才自动调出画布。
+          //
+          // 历史（两次都被用户投诉，别再走回头路）：
+          //   1. 最初是「只要会话在屏幕上就开」——每建一个任务都弹空画布。
+          //   2. 后来改成「文档里有正文才恢复」——仍然会在普通任务的会话里弹出来，
+          //      用户的原话是「我只有在特定条件下触发之后才进入写作，不要直接就进入写作了」。
+          //
+          // 现在的判据是**会话的 agent preset 是不是 writing**：
+          //   - 写作模式 → 自动调出画布（这正是选它的意义）
+          //   - 其他模式 → 一律不自动开；只有 Agent 真的开始写正文时，
+          //     由宿主推来的 canvas-intent 事件调出（或用户手动打开）
+          //
+          // 判据取不到时**不开**（fail closed）：宁可让用户手动开一次，
+          // 也不要再出现「莫名其妙自己弹出来」。
           let cancelled = false;
           let timer = null;
           let attempts = 0;
 
+          /** 读当前会话的 agent preset id；取不到返回 undefined。 */
+          const readAgentPreset = () =>
+            readAgentPresetId({
+              sessions: optionalService(ctx, 'sessions'),
+              useSessions: props?.useSessions,
+              sessionId,
+            });
+
           const attempt = () => {
             if (cancelled) return;
             attempts += 1;
+
+            const preset = readAgentPreset();
+            if (preset === undefined) {
+              // 会话投影可能还没就绪：短暂重试，仍取不到就放弃（不开）。
+              if (attempts < 12) {
+                timer = setTimeout(attempt, 400);
+                return;
+              }
+              report('autoopen:skip', { sessionId, reason: 'agent-preset-unknown' });
+              return;
+            }
+            if (preset !== WRITING_PRESET_ID) {
+              report('autoopen:skip', { sessionId, reason: `not-writing-mode:${preset}` });
+              return;
+            }
+
             const sidebarRight = optionalService(ctx, 'sidebarRight');
             if (sidebarRight === undefined || typeof sidebarRight.openTab !== 'function') {
               if (attempts < 20) {
@@ -2607,7 +3128,7 @@ window.__ModuleLoader__.load({
               } catch {
                 // 记不住也没关系，本次已经打开。
               }
-              report('autoopen:ok', { sessionId, attempts });
+              report('autoopen:ok', { sessionId, attempts, preset });
             } catch (error) {
               if (attempts < 20) {
                 timer = setTimeout(attempt, 500);
@@ -2811,8 +3332,22 @@ window.__ModuleLoader__.load({
       });
 
       // 形态 A：右栏标签页 body（声明感知注入，右栏存在时才生效）。
+      //
+      // 必须用 `inject(sessionId)`：右栏槽位的组件**拿不到任何 props**
+      // （宿主是 renderSlot(seat, {}, { hookContext })），会话身份只能通过注入拿到。
+      // 漏掉 inject 时 CanvasTabBody 的 props.sessionId 恒为 undefined，
+      // 画布会退化成去读 `docIdOfSession(undefined)` = "default" 那份空文档——
+      // 表现就是「右栏画布永远空白 / 永远显示新文档」，而同一份正文在磁盘上明明存在。
+      // 这与官方 sidebar-terminal 的写法一致（inject: (sessionId) => ({...})）。
       ctx.slots.inject('sidebar.right.pane.tab', () =>
-        ctx.slots.register({ name: 'sidebar.right.pane.tab', key: CANVAS_TAB_ID }, CanvasTabBody),
+        ctx.slots.register(
+          {
+            name: 'sidebar.right.pane.tab',
+            key: CANVAS_TAB_ID,
+            inject: (sessionId) => ({ sessionId }),
+          },
+          CanvasTabBody,
+        ),
       );
 
       // 形态 A 的自动开启：会话在屏幕上时把画布钉到对话旁。
@@ -2883,7 +3418,7 @@ window.__ModuleLoader__.load({
     exports.inject = inject;
     // 纯函数暴露给单元测试。它们不依赖 DOM，也不产生副作用，
     // 但内联在 bundle 里无法被 import，所以留这个测试入口。
-    exports.__internals = { transformSelection, buildHighlightSegments, diffLines, formatKeys, modifiersOf };
+    exports.__internals = { transformSelection, buildHighlightSegments, diffLines, formatKeys, modifiersOf, readAgentPresetId };
     return exports;
   },
 });
