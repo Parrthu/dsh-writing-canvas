@@ -1094,11 +1094,45 @@ window.__ModuleLoader__.load({
           });
           if (!ok || data?.ok !== true) throw new Error(data?.error ?? '创建失败');
           setAnnotations(data.annotations ?? []);
-          setMessage(`已记下批注（${ANNOTATION_KIND_LABEL[kind] ?? kind}）。在对话里说一句「处理画布上的批注」，AI 就会读到它。`);
           report('annotation:created', { kind, length: quote.length });
+          return true;
         } catch (error) {
           setStatus('error');
           setMessage(`创建批注失败：${String(error)}`);
+          return false;
+        }
+      };
+
+      /**
+       * 把一条批注交给 AI 处理：替用户把话发到输入框并提交。
+       *
+       * 桥没就绪时**不假装成功**——明说没发出去，并告诉用户怎么办。
+       * 批注本身已经存好了，所以即使发送失败，用户仍可手动在对话里说一句。
+       */
+      const askAgentToHandle = (kind, instruction, quoteOverride) => {
+        const label = ANNOTATION_KIND_LABEL[kind] ?? kind;
+        const quote = (quoteOverride ?? '').trim();
+        const brief = quote === '' ? '' : `\n选中内容：「${quote.slice(0, 60)}${quote.length > 60 ? '…' : ''}」`;
+        // kind=comment 时 label 本身就是「批注」，再写成「批注（批注）」很别扭。
+        const head =
+          kind === 'comment' ? '请处理画布上的这条批注。' : `请处理画布上的批注（${label}）。`;
+        const text =
+          `${head}要求：${instruction}${brief}\n` +
+          '用 writing_canvas_annotate 读取这条批注的准确位置与原文，改完把批注标记为 resolved。';
+        const result = sendToConversation(target.sessionId, text);
+        report('annotation:handoff', { kind, result });
+        if (result === 'sent') {
+          setMessage(`已交给 AI 处理（${label}）。它读取批注后会直接改画布，正文会实时更新。`);
+        } else if (result === 'draft-busy') {
+          setMessage(
+            `批注已记下。但对话框里还有你没发出去的内容，我没有覆盖它——` +
+              '请先把那段发出去或清空，再说一句「处理画布上的批注」。',
+          );
+        } else {
+          setMessage(
+            `批注已记下，但没能自动发到对话框（当前屏幕上不是这个会话，或输入框还没就绪）。` +
+              '请在对话里说一句「处理画布上的批注」，AI 同样会读到它。',
+          );
         }
       };
 
@@ -1120,7 +1154,12 @@ window.__ModuleLoader__.load({
         setAiDraft('');
         setSelection(null);
         // 用开始时的快照，不用实时 selection：这中间 textarea 已经失焦过一次。
-        await addAnnotation(pending.kind, instruction, pending.quote, pending.range);
+        const created = await addAnnotation(pending.kind, instruction, pending.quote, pending.range);
+        if (created === true) {
+          // 留完批注直接把话替用户发出去，AI 收到就开始处理并实时写入画布。
+          // 用户不必自己切到对话里复述一遍要求。
+          askAgentToHandle(pending.kind, instruction);
+        }
       };
 
       /**
@@ -1533,6 +1572,18 @@ window.__ModuleLoader__.load({
                   ? h(
                       'div',
                       { className: 'wcv-annoActions' },
+                      // 让 AI 真的去改：把这条批注发到对话框，AI 读到后直接改画布。
+                      // 原先只有「已处理/忽略/删除」，用户留了批注却没法让 AI 动手。
+                      h(
+                        'button',
+                        {
+                          className: 'wcv-mini wcv-mini--primary',
+                          title: '把这条批注交给 AI：它会读取位置与原文，改完标记为已处理',
+                          onClick: () =>
+                            askAgentToHandle(annotation.kind, annotation.instruction, annotation.quote),
+                        },
+                        '让 AI 处理',
+                      ),
                       h(
                         'button',
                         {
@@ -3091,6 +3142,72 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * 当前会话的「输入框动作」桥。
+     *
+     * 画布在右栏，本身够不到对话输入框；而「让 AI 处理这条批注」必须能替用户
+     * 把话发出去。做法是在 conversation.composer.dock（会话级槽位）挂一个无渲染组件，
+     * 从槽位注入里取到输入框的动作（setDraft / submit）存到这里。
+     *
+     * 只保留**当前屏幕上那个会话**的一份：画布与输入框永远属于同一个会话，
+     * 多会话同时开时以最后挂载的为准，避免把话发错会话。
+     */
+    let composerBridge = null;
+
+    /** 生成「输入框桥」的无渲染组件。 */
+    function makeComposerBridge() {
+      return function ComposerBridge(props) {
+        const sessionId = props?.sessionId;
+        // 槽位注入了 keyboard(= composer shell)，它的 actions 带 setDraft/submit。
+        const inputActions = props?.inputActions ?? props?.keyboard?.actions;
+        // 输入框草稿：发送前必须知道里面有没有东西，否则会把用户正写的一半覆盖掉。
+        //
+        // useInput 是槽位注入的 hook，这里按「存在则调用」处理。它在同一槽位上的
+        // 存在性是稳定的（由组合决定，不在运行中来回变），所以不违反 hook 规则。
+        const useInput = props?.useInput;
+        const draft = typeof useInput === 'function'
+          ? useInput((state) => (state !== null && typeof state === 'object' ? state.draft : undefined))
+          : undefined;
+        React.useEffect(() => {
+          if (typeof sessionId !== 'string' || sessionId === '' || inputActions === undefined) return undefined;
+          composerBridge = { sessionId, inputActions, draft: typeof draft === 'string' ? draft : '' };
+          report('composer:bridge-ready', {
+            sessionId,
+            via: props?.inputActions !== undefined ? 'inputActions' : 'keyboard.actions',
+            canSubmit: typeof inputActions.submit === 'function',
+            hasDraft: typeof draft === 'string' && draft.trim() !== '',
+          });
+          return () => {
+            if (composerBridge !== null && composerBridge.sessionId === sessionId) composerBridge = null;
+          };
+        }, [sessionId, inputActions, draft]);
+        return null;
+      };
+    }
+
+    /**
+     * 把一段话发到这个会话的输入框并提交，替用户按下回车。
+     *
+     * @param sessionId - 目标会话。
+     * @param text - 要发送的内容。
+     * @returns true 表示确实发出去了；false 表示桥还没就绪（界面会据此提示，不假装成功）。
+     */
+    function sendToConversation(sessionId, text) {
+      if (composerBridge === null || composerBridge.sessionId !== sessionId) return 'no-bridge';
+      const { inputActions, draft } = composerBridge;
+      // 输入框里有用户自己写了一半的内容：**绝不覆盖**。把决定权交回用户。
+      if (typeof draft === 'string' && draft.trim() !== '') return 'draft-busy';
+      try {
+        if (typeof inputActions.setDraft !== 'function' || typeof inputActions.submit !== 'function') return 'no-bridge';
+        inputActions.setDraft(text);
+        inputActions.submit();
+        return 'sent';
+      } catch (error) {
+        report('composer:send-failed', { reason: describe(error) });
+        return 'error';
+      }
+    }
+
+    /**
      * 读一个会话的 agent preset id。
      *
      * 只有读到 `writing` 才允许自动调出画布，所以这个函数决定了两件事：
@@ -3462,6 +3579,14 @@ window.__ModuleLoader__.load({
         ctx.slots.register(
           { name: 'conversation.composer.dock', id: 'writing-canvas-autoopen', order: 40 },
           CanvasAutoOpen,
+        ),
+      );
+
+      // 输入框桥：只取动作，不渲染任何东西。
+      ctx.slots.inject('conversation.composer.dock', () =>
+        ctx.slots.register(
+          { name: 'conversation.composer.dock', id: 'writing-canvas-composer-bridge', order: 41 },
+          makeComposerBridge(),
         ),
       );
 

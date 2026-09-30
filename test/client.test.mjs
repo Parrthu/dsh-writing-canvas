@@ -615,3 +615,67 @@ test('回归：工具栏按钮尺寸与形状统一为同款胶囊', () => {
   assert.match(metaBlock, /height: 26px/, 'chip 同为 26px 高');
   assert.match(metaBlock, /border-radius: 999px/, 'chip 也是胶囊');
 });
+
+// ---- 2026-10-01 用户反馈：批注只能标已处理，不能交给 AI ---------------------
+
+test('回归：批注卡片必须有「让 AI 处理」，不能只有已处理/忽略/删除', () => {
+  // 用户原话：「批注只有已处理选项，没有让 AI 处理的选项」。
+  assert.match(CLIENT_SOURCE, /让 AI 处理/, '批注卡片要有让 AI 处理的入口');
+  assert.match(
+    CLIENT_SOURCE,
+    /askAgentToHandle\(annotation\.kind, annotation\.instruction, annotation\.quote\)/,
+    '按钮要把这条批注的要求与原文交给 AI',
+  );
+});
+
+test('回归：浮动工具条提交后要自动发到对话框', () => {
+  // 用户原话：「输入之后，它会自动到对话框，然后让 AI 处理，实时撰写」。
+  const fn = CLIENT_SOURCE.slice(CLIENT_SOURCE.indexOf('const submitAiAction'));
+  const body = fn.slice(0, fn.indexOf('\n      };'));
+  assert.match(body, /askAgentToHandle\(/, '提交成功后要自动交给 AI');
+  assert.match(body, /created === true/, '只有批注确实建好了才发消息');
+});
+
+test('回归：交给 AI 的消息要带上要求，并指明用哪个工具读批注', () => {
+  const fn = CLIENT_SOURCE.slice(CLIENT_SOURCE.indexOf('const askAgentToHandle'));
+  const body = fn.slice(0, fn.indexOf('\n      };'));
+  assert.match(body, /instruction/, '消息要带上用户写的要求');
+  assert.match(body, /writing_canvas_annotate/, '要指引 AI 用批注工具读准确位置');
+  assert.match(body, /resolved/, '要要求 AI 处理完标记已处理');
+});
+
+test('回归：输入框里有未发送的草稿时绝不覆盖', () => {
+  // setDraft 是替换语义：不检查就会把用户正写的一半话冲掉。
+  const fn = CLIENT_SOURCE.slice(CLIENT_SOURCE.indexOf('function sendToConversation'));
+  const body = fn.slice(0, fn.indexOf('\n    }'));
+  assert.match(body, /draft\.trim\(\) !== ''/, '要先判断草稿是否为空');
+  assert.match(body, /return 'draft-busy'/, '草稿非空时明确拒绝并回报原因');
+  assert.ok(
+    body.indexOf("draft-busy") < body.indexOf('inputActions.setDraft'),
+    '判断必须发生在 setDraft 之前',
+  );
+});
+
+test('回归：发送结果要分情况播报，不能一律说成功', () => {
+  const fn = CLIENT_SOURCE.slice(CLIENT_SOURCE.indexOf('const askAgentToHandle'));
+  const body = fn.slice(0, fn.indexOf('\n      };'));
+  for (const outcome of ["'sent'", "'draft-busy'"]) {
+    assert.ok(body.includes(outcome), `要分别处理 ${outcome}`);
+  }
+  assert.match(body, /report\('annotation:handoff'/, '要上报结果便于事后核对');
+});
+
+test('回归：取不到输入框桥时不假装成功', () => {
+  const fn = CLIENT_SOURCE.slice(CLIENT_SOURCE.indexOf('function sendToConversation'));
+  const body = fn.slice(0, fn.indexOf('\n    }'));
+  assert.match(body, /return 'no-bridge'/, '桥没就绪要如实返回');
+});
+
+test('回归：桥必须挂在会话级槽位上并从注入里取输入动作', () => {
+  assert.match(CLIENT_SOURCE, /writing-canvas-composer-bridge/, '要注册桥组件');
+  assert.match(
+    CLIENT_SOURCE,
+    /props\?\.inputActions \?\? props\?\.keyboard\?\.actions/,
+    '输入动作可能经 inputActions 或 keyboard.actions 注入，两条都要认',
+  );
+});
