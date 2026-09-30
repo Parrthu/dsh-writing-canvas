@@ -149,19 +149,29 @@ window.__ModuleLoader__.load({
       return () => el.remove();
     }
 
-    /** 侧边栏入口图标（一支笔）。 */
-    function PanelIcon() {
+    /**
+     * 侧边栏入口图标（一支笔）。
+     * 官方 owner props 契约：{ size: number, active: boolean }。
+     * 选中态的配色由 sidebar 外壳负责，这里只遵守尺寸，并透出 active 供样式挂钩。
+     */
+    function PanelIcon(props) {
+      const size =
+        props !== null && typeof props === 'object' && typeof props.size === 'number' && props.size > 0
+          ? props.size
+          : 17;
+      const active = props !== null && typeof props === 'object' && props.active === true;
       return h(
         'svg',
         {
-          width: 17,
-          height: 17,
+          width: size,
+          height: size,
           viewBox: '0 0 24 24',
           fill: 'none',
           stroke: 'currentColor',
           strokeWidth: 1.8,
           strokeLinecap: 'round',
           strokeLinejoin: 'round',
+          'data-active': active ? 'true' : 'false',
           'aria-hidden': 'true',
         },
         h('path', { d: 'M12 20h9' }),
