@@ -39,8 +39,11 @@ window.__ModuleLoader__.load({
     const API_BASE = '/writing-canvas/api';
     /** 停止输入后多久自动保存。 */
     const AUTOSAVE_DELAY_MS = 1200;
-    /** 自动开启记录在 localStorage 的前缀：只尝试一次，用户关掉就不再打扰。 */
-    const AUTOOPEN_KEY_PREFIX = 'dsh-writing-canvas:autoopen:';
+    /**
+     * 自动开启记录在 localStorage 的前缀：只尝试一次，用户手动关掉后就不再打扰。
+     * 末尾带版本号：修复自动开启逻辑后升版，可让旧的失败标记自然作废。
+     */
+    const AUTOOPEN_KEY_PREFIX = 'dsh-writing-canvas:autoopen:v2:';
     /** 工作台当前选中文档的记忆键。 */
     const WORKBENCH_SELECTION_KEY = 'dsh-writing-canvas:workbench-doc';
 
@@ -167,6 +170,33 @@ window.__ModuleLoader__.load({
       return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
     }
 
+    /** 把任意值变成可安全 JSON 化的描述（Error 直接 stringify 会变成 {}）。 */
+    function describe(value) {
+      if (value instanceof Error) return `${value.name}: ${value.message}`;
+      try {
+        return JSON.parse(JSON.stringify(value));
+      } catch {
+        return String(value);
+      }
+    }
+
+    /**
+     * 把界面里的关键步骤上报给宿主，供开发时用
+     * GET /writing-canvas/api/client-report 读取真实原因。
+     * 上报失败绝不能影响任何功能，所以整体吞掉异常。
+     */
+    function report(event, detail) {
+      try {
+        void fetch(`${API_BASE}/client-report`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ event, detail: detail ?? null }),
+        }).catch(() => {});
+      } catch {
+        // 忽略：诊断通道本身不允许影响功能。
+      }
+    }
+
     /** 版本来源标签。 */
     function sourceLabel(source) {
       if (source === 'agent') return 'AI';
@@ -235,6 +265,12 @@ window.__ModuleLoader__.load({
             setText(data.latest?.content ?? '');
             dirtyRef.current = false;
             setStatus('ready');
+            report('canvas:loaded', {
+              variant,
+              docId: data.docId,
+              exists: data.exists,
+              version: data.latest?.n ?? 0,
+            });
           })
           .catch((error) => {
             if (cancelled) return;
@@ -354,6 +390,7 @@ window.__ModuleLoader__.load({
           { className: 'wcv-header' },
           h('div', { className: 'wcv-title' }, variant === 'pane' ? '写作画布' : '写作工作台'),
           h('div', { className: 'wcv-sub' }, variant === 'pane' ? title : `${title} · ${doc?.workspace ?? ''}`),
+          props.headerExtra === undefined ? null : props.headerExtra(),
           h('div', { className: 'wcv-pill' }, h('span', { className: 'wcv-dot', 'data-state': state }), stateText),
         ),
 
@@ -533,7 +570,21 @@ window.__ModuleLoader__.load({
       const [index, setIndex] = React.useState(null);
       const [selected, setSelected] = React.useState(null);
       const [reloadToken, setReloadToken] = React.useState(0);
-      void props;
+
+      /** 「在对话旁打开画布」按钮 —— 自动开启之外的手动兜底。 */
+      const headerExtra =
+        typeof props?.openBeside !== 'function'
+          ? undefined
+          : () =>
+              h(
+                'button',
+                {
+                  className: 'wcv-btn',
+                  style: { marginLeft: '12px' },
+                  onClick: () => props.openBeside('workbench'),
+                },
+                '在对话旁打开画布',
+              );
 
       React.useEffect(() => {
         let cancelled = false;
@@ -621,6 +672,7 @@ window.__ModuleLoader__.load({
             { className: 'wcv-header' },
             h('div', { className: 'wcv-title' }, '写作工作台'),
             h('div', { className: 'wcv-sub' }, '选择一个文档开始'),
+            headerExtra === undefined ? null : headerExtra(),
           ),
           h(
             'div',
@@ -637,7 +689,19 @@ window.__ModuleLoader__.load({
         target: { workspace: selected.workspace, docId: selected.docId },
         variant: 'workbench',
         renderDocs,
+        headerExtra,
       });
+    }
+
+    /**
+     * 给工作台注入"在对话旁打开画布"的能力。
+     * @param openBeside - 由 apply 提供的打开函数（携带 ctx）。
+     * @returns 工作台面板组件。
+     */
+    function makeWorkbenchPanel(openBeside) {
+      return function WorkbenchPanelWithActions(props) {
+        return h(WorkbenchPanel, { ...props, openBeside });
+      };
     }
 
     /** 安全取一个可选服务：拿不到就返回 undefined，绝不抛错。 */
@@ -662,34 +726,79 @@ window.__ModuleLoader__.load({
      * 生成"自动开启画布"的无渲染组件。
      *
      * 挂在 conversation.composer.dock（会话级槽位）上：只要会话在屏幕上，它就在。
-     * 每个会话只尝试一次，并在 localStorage 记录；用户手动关掉后不会再被强行打开。
+     *
+     * 重要：**只有真正打开成功才写"已尝试"标记**。如果服务还没就绪或 openTab 抛错，
+     * 就每 500ms 重试一次（最多 20 次），绝不把一次失败当成永久结果——
+     * 否则用户会看到"明明说会自动出现，却什么都没有"。
      */
     function makeAutoOpen(ctx) {
       return function CanvasAutoOpen(props) {
         const sessionId = props?.sessionId;
         React.useEffect(() => {
-          if (typeof sessionId !== 'string' || sessionId === '') return;
+          if (typeof sessionId !== 'string' || sessionId === '') return undefined;
           const key = `${AUTOOPEN_KEY_PREFIX}${sessionId}`;
+          let remembered = false;
           try {
-            if (localStorage.getItem(key) === '1') return;
-            localStorage.setItem(key, '1');
+            remembered = localStorage.getItem(key) === '1';
           } catch {
-            // 无 localStorage 时退化为「本组件实例内只尝试一次」。
+            remembered = false;
           }
-          const sidebarRight = optionalService(ctx, 'sidebarRight');
-          if (sidebarRight === undefined || typeof sidebarRight.openTab !== 'function') return;
-          try {
-            sidebarRight.openTab(CANVAS_KIND);
-          } catch (error) {
-            console.warn('[writing-canvas] 自动开启画布失败：', error);
+          if (remembered) {
+            report('autoopen:skip', { sessionId, reason: 'already-opened-once' });
+            return undefined;
           }
+
+          let cancelled = false;
+          let timer = null;
+          let attempts = 0;
+
+          const attempt = () => {
+            if (cancelled) return;
+            attempts += 1;
+            const sidebarRight = optionalService(ctx, 'sidebarRight');
+            if (sidebarRight === undefined || typeof sidebarRight.openTab !== 'function') {
+              if (attempts < 20) {
+                timer = setTimeout(attempt, 500);
+                return;
+              }
+              report('autoopen:fail', { sessionId, reason: 'sidebarRight-unavailable', attempts });
+              return;
+            }
+            try {
+              sidebarRight.openTab(CANVAS_KIND);
+              try {
+                localStorage.setItem(key, '1');
+              } catch {
+                // 记不住也没关系，本次已经打开。
+              }
+              report('autoopen:ok', { sessionId, attempts });
+            } catch (error) {
+              if (attempts < 20) {
+                timer = setTimeout(attempt, 500);
+                return;
+              }
+              report('autoopen:fail', { sessionId, reason: describe(error), attempts });
+            }
+          };
+
+          timer = setTimeout(attempt, 400);
+          return () => {
+            cancelled = true;
+            if (timer !== null) clearTimeout(timer);
+          };
         }, [sessionId]);
         return null;
       };
     }
 
-    /** Cordis 依赖：只需 slots；右栏相关服务用可选方式获取，缺失时优雅降级。 */
-    const inject = ['slots'];
+    /**
+     * Cordis 依赖。
+     *
+     * `sidebarRightTabs` 必须在这里硬依赖：右栏的两个服务是通过 ctx.reflect.provide
+     * 提供的，apply 早于它们就绪时既拿不到服务、也收不到 internal/service 事件，
+     * 结果就是标签页类型永远注册不上、自动开启必然失败。
+     */
+    const inject = ['slots', 'sidebarRightTabs'];
 
     /**
      * 客户端半体入口。
@@ -699,29 +808,51 @@ window.__ModuleLoader__.load({
       const disposeStyles = insertStyles();
       const CanvasAutoOpen = makeAutoOpen(ctx);
 
+      /** 手动在对话旁打开画布（工作台按钮与 guide 入口共用）。 */
+      const openBeside = (origin) => {
+        const sidebarRight = optionalService(ctx, 'sidebarRight');
+        if (sidebarRight === undefined || typeof sidebarRight.openTab !== 'function') {
+          report('manual-open:fail', { origin, reason: 'sidebarRight-unavailable' });
+          return false;
+        }
+        try {
+          sidebarRight.openTab(CANVAS_KIND);
+          report('manual-open:ok', { origin });
+          return true;
+        } catch (error) {
+          report('manual-open:fail', { origin, reason: describe(error) });
+          return false;
+        }
+      };
+
       /** 注册右栏标签页类型（keepMounted = 跨切换保留 body）。 */
-      const registerTabType = (scoped) => {
-        const tabs = optionalService(scoped, 'sidebarRightTabs');
-        if (tabs === undefined || typeof tabs.register !== 'function') return;
-        scoped.effect(
-          () =>
-            tabs.register({
+      const tabs = optionalService(ctx, 'sidebarRightTabs');
+      if (tabs !== undefined && typeof tabs.register === 'function') {
+        ctx.effect(
+          () => {
+            const dispose = tabs.register({
               id: CANVAS_TAB_ID,
               kind: CANVAS_KIND,
               title: () => '写作画布',
               keepMounted: true,
-            }),
+              // guide 入口：右栏的「+」/指南页里会出现一张「写作画布」卡片，
+              // 用户点它即可打开。这是自动开启之外的手动兜底路径。
+              guide: [
+                {
+                  id: 'writing-canvas',
+                  order: 30,
+                  title: () => '写作画布',
+                  description: () => '与对话并排的写作正文，自动保存、可回溯版本',
+                },
+              ],
+            });
+            report('tabtype:registered', { id: CANVAS_TAB_ID, kind: CANVAS_KIND });
+            return dispose;
+          },
           'writing-canvas: 右栏标签页类型',
         );
-      };
-      registerTabType(ctx);
-      // 右栏服务可能在插件之后才就绪，出现时补注册。
-      try {
-        ctx.on('internal/service', (name) => {
-          if (name === 'sidebarRightTabs') registerTabType(ctx);
-        });
-      } catch {
-        // 没有该事件也不算失败。
+      } else {
+        report('tabtype:unavailable', { hasService: tabs !== undefined });
       }
 
       // 形态 A：右栏标签页 body（声明感知注入，右栏存在时才生效）。
@@ -737,14 +868,16 @@ window.__ModuleLoader__.load({
         ),
       );
 
-      // 形态 B：侧边栏入口 + 整页工作台。
+      // 形态 B：侧边栏入口 + 整页工作台（带「在对话旁打开」按钮）。
       ctx.slots.inject('sidebar.panellist', () =>
         ctx.slots.register(
           { name: 'sidebar.panellist', id: PANEL_ID, order: 30, label: '写作工作台' },
           PanelIcon,
         ),
       );
-      ctx.slots.inject('main', () => ctx.slots.register({ name: 'main', key: PANEL_ID }, WorkbenchPanel));
+      ctx.slots.inject('main', () =>
+        ctx.slots.register({ name: 'main', key: PANEL_ID }, makeWorkbenchPanel(openBeside)),
+      );
 
       ctx.effect(() => disposeStyles, 'writing-canvas: 客户端样式');
     }

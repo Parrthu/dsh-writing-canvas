@@ -94,6 +94,15 @@ export function createApiHandler({ config, resolveWorkspacePath, listWorkspaces,
   /** 同一工作区复用同一个 DocumentStore 实例（写入链才有意义）。 */
   const stores = new Map();
 
+  /**
+   * 浏览器侧诊断上报（内存环形缓冲，最多 50 条）。
+   *
+   * 存在的理由：客户端半体跑在浏览器里，出问题时宿主看不见。界面把关键步骤
+   * （例如「自动开启画布」）的结果上报到这里，开发者可以直接用
+   * GET /writing-canvas/api/client-report 读到真实原因。
+   */
+  const clientReports = [];
+
   const storeFor = (workspacePath) => {
     let store = stores.get(workspacePath);
     if (store === undefined) {
@@ -265,6 +274,26 @@ export function createApiHandler({ config, resolveWorkspacePath, listWorkspaces,
           latest: restored.latest,
           versions: await store.listVersions(target.docId),
         });
+        return;
+      }
+
+      // ---- 浏览器侧诊断上报（开发者用）------------------------------------
+      if (route === '/client-report' && method === 'POST') {
+        const body = await readJsonBody(req, 64 * 1024);
+        const entry = {
+          at: new Date().toISOString(),
+          event: typeof body.event === 'string' ? body.event : 'unknown',
+          detail: body.detail ?? null,
+        };
+        clientReports.push(entry);
+        while (clientReports.length > 50) clientReports.shift();
+        logger?.info?.(`writing-canvas: 界面上报 ${entry.event} ${JSON.stringify(entry.detail)}`);
+        sendJson(res, 200, { ok: true });
+        return;
+      }
+
+      if (route === '/client-report' && method === 'GET') {
+        sendJson(res, 200, { ok: true, count: clientReports.length, reports: clientReports });
         return;
       }
 
