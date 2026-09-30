@@ -1,0 +1,21 @@
+# 依赖与构建产物
+node_modules/
+dist/
+lib/
+*.tgz
+
+# 写作运行时状态（草稿、版本、导出）
+.writing-canvas/
+writing-state/
+exports/
+
+# 编辑器与系统噪音
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# 日志与临时文件
+*.log
+tmp/
+.tmp/
