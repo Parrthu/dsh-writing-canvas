@@ -214,6 +214,20 @@ window.__ModuleLoader__.load({
   border: 1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.35));
   background: transparent; color: inherit; }
 .wcv-mini:hover { border-color: var(--dsw-alias-brand-primary, #4d6bfe); }
+
+/* ---- 窄栏底部抽屉：默认收起，绝不挤压正文 ---- */
+.wcv-hidden { display: none !important; }
+.wcv-drawer { flex: none; display: flex; flex-direction: column; max-height: 42%;
+  border-top: 1px solid var(--dsw-alias-border-l1, rgba(128,128,128,0.28)); }
+.wcv-drawerTabs { flex: none; display: flex; align-items: center; gap: 4px; padding: 4px 8px; }
+.wcv-drawerTab { font: inherit; font-size: 11.5px; padding: 2px 9px; border-radius: 999px; cursor: pointer;
+  border: 1px solid var(--dsw-alias-border-l1, rgba(128,128,128,0.3));
+  background: transparent; color: var(--dsw-alias-label-secondary, #6b6b6b); }
+.wcv-drawerTab[data-active="true"] { background: var(--dsw-alias-bg-layer-2, rgba(128,128,128,0.16));
+  color: var(--dsw-alias-label-primary, #1a1a1a); border-color: var(--dsw-alias-border-l2, rgba(128,128,128,0.45)); }
+.wcv-drawerSpacer { flex: 1; }
+.wcv-drawerMeta { font-size: 11px; color: var(--dsw-alias-label-secondary, #6b6b6b); }
+.wcv-drawerBody { flex: 1; min-height: 0; overflow: auto; padding: 0 10px 10px; }
 `;
 
     /** 注入样式（模块体副作用，仅在 bundle 首次 materialize 时执行一次）。 */
@@ -333,6 +347,27 @@ window.__ModuleLoader__.load({
       const [annotations, setAnnotations] = React.useState([]);
       const [writing, setWriting] = React.useState({ active: false, startedAt: null, note: '' });
       const [selection, setSelection] = React.useState(null);
+      const [specs, setSpecs] = React.useState([]);
+      const [exportSpec, setExportSpec] = React.useState('');
+      const [exporting, setExporting] = React.useState(false);
+      const [exportResult, setExportResult] = React.useState(null);
+      /** 窄栏模式底部抽屉当前展开的面板：默认 none（完全不占正文空间）。 */
+      const [paneTab, setPaneTab] = React.useState('none');
+      /** 空内容覆盖被拦下时的提示（只有用户显式确认才允许清空）。 */
+      const [emptyBlocked, setEmptyBlocked] = React.useState(false);
+
+      // 格式规格清单来自宿主（预设的字体/字号/行距）。
+      React.useEffect(() => {
+        let cancelled = false;
+        apiGet('/format-specs')
+          .then(({ ok, data }) => {
+            if (!cancelled && ok && Array.isArray(data?.specs)) setSpecs(data.specs);
+          })
+          .catch(() => {});
+        return () => {
+          cancelled = true;
+        };
+      }, []);
 
       // 写作类型清单来自宿主（每个类型都是独立的插件行，可单独启用/停用）。
       React.useEffect(() => {
@@ -357,6 +392,8 @@ window.__ModuleLoader__.load({
       /** 正文输入框与批注高亮层：高亮层用同样的排版镜像正文，用来给批注上色。 */
       const editorRef = React.useRef(null);
       const highlightRef = React.useRef(null);
+      /** 整个画布的根节点，用于界面自检。 */
+      const rootRef = React.useRef(null);
       /** 逐字呈现用的定时器，切换目标时必须清掉。 */
       const revealTimerRef = React.useRef(null);
 
@@ -443,6 +480,47 @@ window.__ModuleLoader__.load({
       );
 
       React.useEffect(() => stopReveal, [stopReveal]);
+
+      /**
+       * 界面自检：把「实际渲染出了什么」回报给宿主。
+       *
+       * 为什么需要：客户端跑在浏览器里，宿主看不见它。开发者（包括 AI 自己）可以
+       * 通过 GET /writing-canvas/api/client-report 读到结构化的自检结果，
+       * 从而在没有截图权限的情况下也能验证界面是否真的渲染正确。
+       */
+      React.useEffect(() => {
+        const timer = setTimeout(() => {
+          const root = rootRef.current;
+          if (root === null) return;
+          const one = (selector) => root.querySelector(selector);
+          const all = (selector) => root.querySelectorAll(selector);
+          const editor = one('.wcv-editor');
+          report('selfcheck', {
+            variant,
+            toolbarButtons: all('.wcv-tool').length,
+            typeSelect: one('.wcv-select') !== null,
+            formatTag: one('.wcv-formatTag') !== null,
+            columns: all('.wcv-col').length,
+            hiddenColumns: all('.wcv-hidden').length,
+            drawer: one('.wcv-drawer') !== null,
+            drawerOpen: one('.wcv-drawerBody') !== null,
+            exportButton: [...all('.wcv-btn')].some((node) => node.textContent.includes('套用格式')),
+            specOptions: all('.wcv-select option').length,
+            annotationPanel: one('.wcv-colBody') !== null,
+            annotationCards: all('.wcv-anno').length,
+            highlightLayer: one('.wcv-highlight') !== null,
+            highlightMarks: all('.wcv-mark').length,
+            versionRows: all('.wcv-ver').length,
+            editorPresent: editor !== null,
+            editorChars: editor === null ? -1 : editor.value.length,
+            editorHeight: editor === null ? -1 : Math.round(editor.getBoundingClientRect().height),
+            rootHeight: Math.round(root.getBoundingClientRect().height),
+            writingPill: one('.wcv-writing') !== null,
+            bannerText: one('.wcv-banner') === null ? null : one('.wcv-banner').textContent.slice(0, 80),
+          });
+        }, 1500);
+        return () => clearTimeout(timer);
+      }, [variant, reloadToken]);
 
       /**
        * 订阅宿主的事件流。
@@ -590,6 +668,51 @@ window.__ModuleLoader__.load({
         }
       };
 
+      /** 保存后清掉上一次的导出结论，避免显示过期的校验结果。 */
+      React.useEffect(() => {
+        setExportResult(null);
+      }, [baseVersion]);
+
+      /**
+       * 一键套用格式：把当前正文按所选规格生成 DOCX，并展示**回读校验**的真实结果。
+       * 校验未通过时如实显示失败项，不谎报成功。
+       */
+      const applyFormatSpec = async () => {
+        setExporting(true);
+        setExportResult(null);
+        try {
+          const { ok, data } = await apiPost('/export', {
+            ...targetBody(target),
+            specId: exportSpec === '' ? undefined : exportSpec,
+          });
+          setExportResult(data ?? null);
+          report('export:done', {
+            ok: data?.ok === true,
+            specId: data?.specId ?? null,
+            failed: data?.verification?.failed ?? null,
+            total: data?.verification?.total ?? null,
+          });
+          if (data?.ok !== true) {
+            setMessage(
+              data?.error === 'python-unavailable'
+                ? '套用格式失败：找不到可用的 Python（需要 python-docx）。'
+                : `套用格式后校验未通过：${data?.message ?? data?.error ?? '未知原因'}`,
+            );
+            setStatus('error');
+          } else {
+            setMessage(
+              `已按「${data.specLabel}」生成 DOCX，${data.verification.total} 项回读校验全部通过：${data.relativePath}`,
+            );
+            setStatus('ready');
+          }
+        } catch (error) {
+          setStatus('error');
+          setMessage(`套用格式失败：${String(error)}`);
+        } finally {
+          setExporting(false);
+        }
+      };
+
       /** 选定写作类型（写入文档元信息，不产生正文版本）。 */
       const chooseType = async (typeId) => {
         setStatus('saving');
@@ -631,7 +754,17 @@ window.__ModuleLoader__.load({
               source: options.source ?? 'user',
               note: options.note ?? '',
               force: options.force === true,
+              allowEmpty: options.allowEmpty === true,
             });
+
+            // 空内容覆盖被拦下：服务端有非空内容，而这次要写入的是空白。
+            // 不静默清空，交给用户显式确认。
+            if (httpStatus === 409 && data?.emptyRejected === true) {
+              setEmptyBlocked(true);
+              setMessage('正文为空，已阻止覆盖：服务端当前版本不是空的。如果确实要清空，请点下面的「确认清空」。');
+              setStatus('ready');
+              return;
+            }
 
             if (httpStatus === 409 && data?.conflict === true) {
               setConflict({ latest: data.latest, versions: data.versions ?? [], meta: data.meta });
@@ -671,6 +804,7 @@ window.__ModuleLoader__.load({
       const onChange = (event) => {
         const next = event.target.value;
         setText(next);
+        if (next.trim() !== '') setEmptyBlocked(false);
         const latestContent = doc?.latest?.content ?? '';
         if (next !== latestContent) {
           dirtyRef.current = true;
@@ -718,10 +852,110 @@ window.__ModuleLoader__.load({
       const title = doc?.meta?.title ?? (doc?.exists === false ? '未命名文档' : '写作画布');
       const currentTypeId = doc?.meta?.writingType ?? '';
       const currentType = types.find((type) => type.id === currentTypeId);
+      const openCount = annotations.filter((a) => a.status === 'open').length;
+      /** 当前选用的 DOCX 格式规格：用户显式选择的优先，其次取写作类型的默认规格。 */
+      const currentSpecId =
+        exportSpec !== '' ? exportSpec : (doc?.meta?.format?.spec ?? specs[0]?.id ?? '');
+
+      /** 批注列表内容（整页模式放右栏，窄栏模式放进底部抽屉）。 */
+      const renderAnnotationsBody = () =>
+        annotations.length === 0
+          ? h('div', { className: 'wcv-empty' }, '选中正文里的一段文字，就会浮出工具条：可以直接加格式，也可以让 AI 改写、扩写、缩写、润色，或留一条批注。')
+          : annotations.map((annotation) =>
+              h(
+                'div',
+                { key: annotation.id, className: 'wcv-anno', 'data-status': annotation.status },
+                h(
+                  'div',
+                  { className: 'wcv-annoHead' },
+                  h('span', { className: 'wcv-annoKind' }, ANNOTATION_KIND_LABEL[annotation.kind] ?? annotation.kind),
+                  h('span', null, annotation.author === 'agent' ? 'AI' : '我'),
+                  h('span', { style: { marginLeft: 'auto' } }, formatTime(annotation.createdAt)),
+                ),
+                annotation.quote !== '' ? h('div', { className: 'wcv-annoQuote' }, annotation.quote) : null,
+                annotation.anchorLost === true
+                  ? h('div', { className: 'wcv-annoLost' }, '需重新标注：这段文字已不在正文中（正文被改过）。')
+                  : null,
+                annotation.instruction !== '' ? h('div', { className: 'wcv-annoText' }, annotation.instruction) : null,
+                ...(Array.isArray(annotation.thread) ? annotation.thread : []).map((entry, index) =>
+                  h('div', { key: index, className: 'wcv-annoThread' }, `${entry.author === 'agent' ? 'AI' : '我'}：${entry.text}`),
+                ),
+                annotation.status === 'open'
+                  ? h(
+                      'div',
+                      { className: 'wcv-annoActions' },
+                      h(
+                        'button',
+                        {
+                          className: 'wcv-mini',
+                          onClick: () =>
+                            void updateAnnotation(annotation.id, {
+                              status: 'resolved',
+                              resolvedVersion: baseVersionRef.current,
+                            }),
+                        },
+                        '已处理',
+                      ),
+                      h(
+                        'button',
+                        { className: 'wcv-mini', onClick: () => void updateAnnotation(annotation.id, { status: 'dismissed' }) },
+                        '忽略',
+                      ),
+                      h('button', { className: 'wcv-mini', onClick: () => void deleteAnnotation(annotation.id) }, '删除'),
+                    )
+                  : h(
+                      'div',
+                      { className: 'wcv-annoActions' },
+                      h('span', { className: 'wcv-annoHead' }, annotation.status === 'resolved' ? '已处理' : '已忽略'),
+                      h('button', { className: 'wcv-mini', onClick: () => void deleteAnnotation(annotation.id) }, '删除'),
+                    ),
+              ),
+            );
+
+      /** 版本历史列表内容。 */
+      const renderVersionsBody = () =>
+        versions.length === 0
+          ? h('div', { className: 'wcv-empty' }, '还没有版本。开始输入并停止片刻，就会自动生成第一个不可变版本。')
+          : [...versions].reverse().map((version) =>
+              h(
+                'div',
+                { key: version.n, className: 'wcv-ver', 'data-active': viewing?.n === version.n ? 'true' : 'false' },
+                h(
+                  'div',
+                  {
+                    className: 'wcv-verTop',
+                    onClick: () => {
+                      void apiGet(
+                        '/doc/version',
+                        new URLSearchParams({ ...Object.fromEntries(targetQuery(target)), n: String(version.n) }),
+                      ).then(({ ok, data }) => {
+                        if (ok) setViewing(data.version);
+                      });
+                    },
+                  },
+                  `v${version.n}`,
+                  h('span', { className: 'wcv-verMeta' }, sourceLabel(version.source)),
+                ),
+                h('div', { className: 'wcv-verMeta' }, `${formatTime(version.at)} · ${version.bytes} 字节`),
+                viewing?.n === version.n
+                  ? h(
+                      'div',
+                      null,
+                      h('div', { className: 'wcv-preview' }, viewing.content.slice(0, 400)),
+                      h(
+                        'div',
+                        { className: 'wcv-actions' },
+                        h('button', { className: 'wcv-btn', onClick: () => void restore(version.n) }, '还原到此版本'),
+                        h('button', { className: 'wcv-btn', onClick: () => setViewing(null) }, '收起'),
+                      ),
+                    )
+                  : null,
+              ),
+            );
 
       return h(
         'div',
-        { className: `wcv-root wcv-root--${variant}` },
+        { className: `wcv-root wcv-root--${variant}`, ref: rootRef },
         h(
           'div',
           { className: 'wcv-header' },
@@ -730,6 +964,40 @@ window.__ModuleLoader__.load({
           props.headerExtra === undefined ? null : props.headerExtra(),
           h('div', { className: 'wcv-pill' }, h('span', { className: 'wcv-dot', 'data-state': state }), stateText),
         ),
+
+        emptyBlocked
+          ? h(
+              'div',
+              { className: 'wcv-banner wcv-banner--warn' },
+              '正文为空，已阻止覆盖：服务端当前版本不是空的。',
+              h(
+                'div',
+                { className: 'wcv-actions' },
+                h(
+                  'button',
+                  {
+                    className: 'wcv-btn',
+                    onClick: () => {
+                      setEmptyBlocked(false);
+                      void save({ allowEmpty: true, note: '用户确认清空文档' });
+                    },
+                  },
+                  '确认清空',
+                ),
+                h(
+                  'button',
+                  {
+                    className: 'wcv-btn wcv-btn--primary',
+                    onClick: () => {
+                      setEmptyBlocked(false);
+                      setReloadToken((n) => n + 1);
+                    },
+                  },
+                  '载入服务端版本',
+                ),
+              ),
+            )
+          : null,
 
         conflict !== null
           ? h(
@@ -808,6 +1076,48 @@ window.__ModuleLoader__.load({
             : null,
           types.length === 0
             ? h('span', { className: 'wcv-formatTag' }, '尚未启用任何写作类型插件')
+            : null,
+
+          // 一键套用格式：画布只管内容，版式交给预设规格 + Python 落地。
+          h('span', { className: 'wcv-toolSep' }),
+          h(
+            'select',
+            {
+              className: 'wcv-select',
+              value: currentSpecId,
+              title: 'DOCX 格式规格（字体 / 字号 / 行距）',
+              onChange: (event) => {
+                setExportSpec(event.target.value);
+                setExportResult(null);
+              },
+            },
+            ...specs.map((spec) =>
+              h(
+                'option',
+                { key: spec.id, value: spec.id },
+                `${spec.body.fontEastAsia} ${spec.body.sizePt}pt${
+                  spec.body.lineSpacingPt ? ` · 固定行距 ${spec.body.lineSpacingPt}pt` : ''
+                }`,
+              ),
+            ),
+          ),
+          h(
+            'button',
+            {
+              className: 'wcv-btn',
+              disabled: exporting,
+              onClick: () => void applyFormatSpec(),
+            },
+            exporting ? '正在套用…' : '套用格式并导出',
+          ),
+          exportResult !== null
+            ? h(
+                'span',
+                { className: 'wcv-formatTag' },
+                exportResult.ok === true
+                  ? `✓ 校验 ${exportResult.verification.total}/${exportResult.verification.total}`
+                  : `✗ 校验未过${exportResult.verification ? ` (${exportResult.verification.failed}/${exportResult.verification.total})` : ''}`,
+              )
             : null,
         ),
 
@@ -998,127 +1308,60 @@ window.__ModuleLoader__.load({
             ),
           ),
 
-          // 批注面板
+          // 批注面板（整页模式放右栏；窄栏模式隐藏，内容改由底部抽屉呈现）
           h(
             'div',
-            { className: 'wcv-col' },
-            h('div', { className: 'wcv-colHead' }, `批注（${annotations.filter((a) => a.status === 'open').length} 待处理 / ${annotations.length}）`),
-            h(
-              'div',
-              { className: 'wcv-colBody' },
-              annotations.length === 0
-                ? h('div', { className: 'wcv-empty' }, '选中正文里的一段文字，就会浮出工具条：可以直接加格式，也可以让 AI 改写、扩写、缩写、润色，或留一条批注。')
-                : annotations.map((annotation) =>
-                    h(
-                      'div',
-                      { key: annotation.id, className: 'wcv-anno', 'data-status': annotation.status },
-                      h(
-                        'div',
-                        { className: 'wcv-annoHead' },
-                        h('span', { className: 'wcv-annoKind' }, ANNOTATION_KIND_LABEL[annotation.kind] ?? annotation.kind),
-                        h('span', null, annotation.author === 'agent' ? 'AI' : '我'),
-                        h('span', { style: { marginLeft: 'auto' } }, formatTime(annotation.createdAt)),
-                      ),
-                      annotation.quote !== ''
-                        ? h('div', { className: 'wcv-annoQuote' }, annotation.quote)
-                        : null,
-                      annotation.anchorLost === true
-                        ? h('div', { className: 'wcv-annoLost' }, '需重新标注：这段文字已不在正文中（正文被改过）。')
-                        : null,
-                      annotation.instruction !== ''
-                        ? h('div', { className: 'wcv-annoText' }, annotation.instruction)
-                        : null,
-                      ...(Array.isArray(annotation.thread) ? annotation.thread : []).map((entry, index) =>
-                        h(
-                          'div',
-                          { key: index, className: 'wcv-annoThread' },
-                          `${entry.author === 'agent' ? 'AI' : '我'}：${entry.text}`,
-                        ),
-                      ),
-                      annotation.status === 'open'
-                        ? h(
-                            'div',
-                            { className: 'wcv-annoActions' },
-                            h(
-                              'button',
-                              {
-                                className: 'wcv-mini',
-                                onClick: () => void updateAnnotation(annotation.id, { status: 'resolved', resolvedVersion: baseVersionRef.current }),
-                              },
-                              '已处理',
-                            ),
-                            h(
-                              'button',
-                              { className: 'wcv-mini', onClick: () => void updateAnnotation(annotation.id, { status: 'dismissed' }) },
-                              '忽略',
-                            ),
-                            h('button', { className: 'wcv-mini', onClick: () => void deleteAnnotation(annotation.id) }, '删除'),
-                          )
-                        : h(
-                            'div',
-                            { className: 'wcv-annoActions' },
-                            h('span', { className: 'wcv-annoHead' }, annotation.status === 'resolved' ? '已处理' : '已忽略'),
-                            h('button', { className: 'wcv-mini', onClick: () => void deleteAnnotation(annotation.id) }, '删除'),
-                          ),
-                    ),
-                  ),
-            ),
+            { className: variant === 'workbench' ? 'wcv-col' : 'wcv-col wcv-hidden' },
+            h('div', { className: 'wcv-colHead' }, `批注（${openCount} 待处理 / ${annotations.length}）`),
+            h('div', { className: 'wcv-colBody' }, renderAnnotationsBody()),
           ),
 
           h(
             'div',
-            { className: 'wcv-col' },
+            { className: variant === 'workbench' ? 'wcv-col' : 'wcv-col wcv-hidden' },
             h('div', { className: 'wcv-colHead' }, `版本历史（${versions.length}）`),
-            h(
-              'div',
-              { className: 'wcv-colBody' },
-              versions.length === 0
-                ? h('div', { className: 'wcv-empty' }, '还没有版本。开始输入并停止片刻，就会自动生成第一个不可变版本。')
-                : [...versions].reverse().map((version) =>
-                    h(
-                      'div',
-                      { key: version.n, className: 'wcv-ver', 'data-active': viewing?.n === version.n ? 'true' : 'false' },
-                      h(
-                        'div',
-                        {
-                          className: 'wcv-verTop',
-                          onClick: () => {
-                            void apiGet('/doc/version', new URLSearchParams({ ...Object.fromEntries(targetQuery(target)), n: String(version.n) }))
-                              .then(({ ok, data }) => {
-                                if (ok) setViewing(data.version);
-                              });
-                          },
-                        },
-                        `v${version.n}`,
-                        h('span', { className: 'wcv-verMeta' }, sourceLabel(version.source)),
-                      ),
-                      h(
-                        'div',
-                        { className: 'wcv-verMeta' },
-                        `${formatTime(version.at)} · ${version.bytes} 字节`,
-                      ),
-                      viewing?.n === version.n
-                        ? h(
-                            'div',
-                            null,
-                            h('div', { className: 'wcv-preview' }, viewing.content.slice(0, 400)),
-                            h(
-                              'div',
-                              { className: 'wcv-actions' },
-                              h(
-                                'button',
-                                { className: 'wcv-btn', onClick: () => void restore(version.n) },
-                                '还原到此版本',
-                              ),
-                              h('button', { className: 'wcv-btn', onClick: () => setViewing(null) }, '收起'),
-                            ),
-                          )
-                        : null,
-                    ),
-                  ),
-            ),
+            h('div', { className: 'wcv-colBody' }, renderVersionsBody()),
           ),
         ),
+
+        // 窄栏模式的底部抽屉：默认收起，点标签才展开，绝不挤压正文。
+        variant === 'pane'
+          ? h(
+              'div',
+              { className: 'wcv-drawer' },
+              h(
+                'div',
+                { className: 'wcv-drawerTabs' },
+                h(
+                  'button',
+                  {
+                    className: 'wcv-drawerTab',
+                    'data-active': paneTab === 'annotations' ? 'true' : 'false',
+                    onClick: () => setPaneTab((current) => (current === 'annotations' ? 'none' : 'annotations')),
+                  },
+                  `批注 ${openCount}/${annotations.length}`,
+                ),
+                h(
+                  'button',
+                  {
+                    className: 'wcv-drawerTab',
+                    'data-active': paneTab === 'versions' ? 'true' : 'false',
+                    onClick: () => setPaneTab((current) => (current === 'versions' ? 'none' : 'versions')),
+                  },
+                  `版本 ${versions.length}`,
+                ),
+                h('span', { className: 'wcv-drawerSpacer' }),
+                h('span', { className: 'wcv-drawerMeta' }, `${text.length} 字`),
+              ),
+              paneTab === 'none'
+                ? null
+                : h(
+                    'div',
+                    { className: 'wcv-drawerBody' },
+                    paneTab === 'annotations' ? renderAnnotationsBody() : renderVersionsBody(),
+                  ),
+            )
+          : null,
 
         h(
           'div',

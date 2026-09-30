@@ -14,6 +14,8 @@
  * @module dsh-writing-canvas/tools
  */
 
+import { exportDocx } from './format/docx.js';
+import { getFormatSpec, listFormatSpecs } from './format/specs.js';
 import { docIdOfSession } from './routes.js';
 import { getType, listTypes } from './types/registry.js';
 
@@ -287,6 +289,82 @@ export function registerWritingTools({ ctx, resolveWorkspacePath, storeFor, anno
         restoredFrom: args.n,
         version: restored.latest.n,
         message: `已把 v${args.n} 的内容还原为 v${restored.latest.n}（历史保持完整）。`,
+      };
+    },
+  });
+
+  // ---------------------------------------------------------------- 套用格式
+  register({
+    name: 'writing_canvas_export',
+    description:
+      '把画布正文按预设格式规格一键套用，生成 DOCX，并在生成后**回读校验**。' +
+      '画布本身只管内容（Markdown）；字体、字号、行距这类版式由这个工具落地。' +
+      '返回里带 verification.checks，必须如实转述校验结果——校验没过就不能说「已按要求排版」。',
+    parameters: {
+      type: 'object',
+      properties: {
+        specId: {
+          type: 'string',
+          description:
+            '格式规格 id，例如 gongwen-gb9704（党政机关公文）、plain-docx（通用中文文档）、report-docx（工作报告）。省略则用文档已选写作类型的默认规格。',
+        },
+      },
+      additionalProperties: false,
+    },
+    output: {
+      schema: { type: 'object' },
+      render: (_args, value) => textOf(value),
+    },
+    async execute(args, exec) {
+      const { docId, workspacePath, store } = await targetOf(exec);
+      const doc = await store.readDoc(docId);
+      if (doc === null) {
+        return { ok: false, message: '这份文档还没有内容，先写正文再套用格式。' };
+      }
+      const specId =
+        typeof args.specId === 'string' && args.specId !== ''
+          ? args.specId
+          : (doc.meta.format?.spec ?? 'plain-docx');
+      const found = getFormatSpec(specId);
+      if (found === null) {
+        return {
+          ok: false,
+          message: `没有 id 为 ${specId} 的格式规格。`,
+          available: listFormatSpecs().map((item) => item.id),
+        };
+      }
+
+      const report = await exportDocx({
+        workspacePath,
+        stateDir: store.stateDir,
+        docId,
+        content: doc.latest.content,
+        spec: found.spec,
+        specId,
+        title: doc.meta.title,
+      });
+
+      if (report.ok !== true) {
+        return {
+          ok: false,
+          specId,
+          specLabel: found.spec.label,
+          error: report.error ?? 'verification-failed',
+          message: report.message ?? '套用格式后回读校验未通过，请如实报告失败原因，不要说「已完成」。',
+          verification: report.verification ?? null,
+        };
+      }
+
+      return {
+        ok: true,
+        specId,
+        specLabel: found.spec.label,
+        file: report.file,
+        relativePath: report.relativePath,
+        bytes: report.bytes,
+        verification: report.verification,
+        warnings: report.warnings ?? [],
+        message: `已按「${found.spec.label}」生成 DOCX 并通过 ${report.verification.total} 项回读校验，文件在 ${report.relativePath}。`,
       };
     },
   });

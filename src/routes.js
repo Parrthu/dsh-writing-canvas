@@ -17,6 +17,8 @@
  */
 
 import { AnnotationStore } from './annotations.js';
+import { exportDocx } from './format/docx.js';
+import { getFormatSpec, listFormatSpecs } from './format/specs.js';
 import { DocumentStore } from './store.js';
 import { listTypes } from './types/registry.js';
 
@@ -282,7 +284,22 @@ export function createApiHandler({
           title: typeof body.title === 'string' ? body.title : undefined,
           baseVersion: Number.isInteger(body.baseVersion) ? body.baseVersion : undefined,
           force: body.force === true,
+          allowEmpty: body.allowEmpty === true,
         });
+
+        if (saved.emptyRejected === true) {
+          logger?.info?.(`writing-canvas: ${target.docId} 空内容覆盖被拦下（服务端 v${saved.latest.n} 非空）`);
+          sendJson(res, 409, {
+            emptyRejected: true,
+            docId: target.docId,
+            workspace: saved.workspace,
+            meta: saved.meta,
+            latest: saved.latest,
+            versions: await store.listVersions(target.docId),
+            message: '正文为空，已阻止覆盖：服务端当前版本不是空的。确实要清空请显式确认。',
+          });
+          return;
+        }
 
         if (saved.conflict === true) {
           logger?.info?.(`writing-canvas: ${target.docId} 检测到冲突（服务端已到 v${saved.latest.n}），未写入`);
@@ -467,6 +484,65 @@ export function createApiHandler({
         const annotations = await store.list(target.docId, doc?.latest?.content);
         bus?.publishAnnotationsChanged?.(target.docId, { count: annotations.length });
         sendJson(res, 200, { ok: removed, annotations });
+        return;
+      }
+
+      // ---- 格式规格清单 --------------------------------------------------
+      if (route === '/format-specs' && method === 'GET') {
+        sendJson(res, 200, { ok: true, specs: listFormatSpecs() });
+        return;
+      }
+
+      // ---- 一键套用格式 → 生成 DOCX 并回读校验 ---------------------------
+      if (route === '/export' && method === 'POST') {
+        const body = await readJsonBody(req, 256 * 1024);
+        const target = await resolveTarget(body);
+        if (target.error !== undefined) {
+          sendJson(res, 400, { error: target.error });
+          return;
+        }
+        const store = storeFor(target.workspacePath);
+        const doc = await store.readDoc(target.docId);
+        if (doc === null) {
+          sendJson(res, 400, { error: 'document-empty', message: '这份文档还没有内容，先写点东西再套用格式。' });
+          return;
+        }
+
+        const specId =
+          typeof body.specId === 'string' && body.specId !== ''
+            ? body.specId
+            : (doc.meta.format?.spec ?? 'plain-docx');
+        const found = getFormatSpec(specId);
+        if (found === null) {
+          sendJson(res, 400, {
+            error: 'unknown-format-spec',
+            specId,
+            available: listFormatSpecs().map((item) => item.id),
+          });
+          return;
+        }
+
+        const report = await exportDocx({
+          workspacePath: target.workspacePath,
+          stateDir: config.stateDir,
+          docId: target.docId,
+          content: doc.latest.content,
+          spec: found.spec,
+          specId,
+          title: doc.meta.title,
+        });
+
+        logger?.info?.(
+          `writing-canvas: 套用格式 ${specId} → ${report.ok ? '校验通过' : '校验未通过'}（${
+            report.verification ? `${report.verification.total - report.verification.failed}/${report.verification.total}` : report.error
+          }）`,
+        );
+        sendJson(res, report.ok === true ? 200 : 500, {
+          ...report,
+          docId: target.docId,
+          specLabel: found.spec.label,
+          version: doc.latest.n,
+        });
         return;
       }
 

@@ -235,6 +235,25 @@ export class DocumentStore {
       const metaPath = join(dir, 'meta.json');
       const existing = existsSync(metaPath) ? JSON.parse(await readFile(metaPath, 'utf8')) : null;
 
+      // 空内容保护：**绝不允许用空白内容静默覆盖一份非空文档**。
+      //
+      // 这道防线来自 ChatGPT Canvas 的头号翻车点（静默覆盖用户内容）。空保存
+      // 可能是误触、可能是界面在重载期间状态未就绪，也可能是用户真的想清空——
+      // 前两种情况下静默写入就是数据丢失。因此这里一律拦下，只有调用方显式
+      // 传 allowEmpty: true 才允许清空。
+      if (options.allowEmpty !== true && content.trim() === '' && existing !== null && existing.latest > 0) {
+        const previous = await this.readVersion(docId, existing.latest);
+        if (previous !== null && String(previous.content).trim() !== '') {
+          return {
+            emptyRejected: true,
+            meta: existing,
+            latest: previous,
+            workspace: this.workspacePath,
+            stateDir: this.stateDir,
+          };
+        }
+      }
+
       // 冲突检测：客户端声明它基于哪个版本编辑。若服务端已经前进（例如 Agent
       // 期间写入过新版本），**不写入**，把决定权交回用户，绝不静默覆盖。
       if (

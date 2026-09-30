@@ -159,6 +159,46 @@ test('未写入过的文档读取返回 null', async () => {
   });
 });
 
+test('空白内容不能静默覆盖非空文档（防数据丢失）', async () => {
+  await withStore(async (store) => {
+    await store.saveDoc('doc-a', '这是用户辛苦写下的内容。');
+    const blocked = await store.saveDoc('doc-a', '');
+    assert.equal(blocked.emptyRejected, true, '空覆盖必须被拦下');
+    // 关键：原内容必须还在。
+    assert.equal((await store.readDoc('doc-a')).latest.content, '这是用户辛苦写下的内容。');
+    assert.equal((await store.listVersions('doc-a')).length, 1, '被拦下时不应产生新版本');
+  });
+});
+
+test('只有空白字符（空格换行制表符）同样会被拦下', async () => {
+  await withStore(async (store) => {
+    await store.saveDoc('doc-a', '有内容');
+    const blocked = await store.saveDoc('doc-a', '   \n\n\t  ');
+    assert.equal(blocked.emptyRejected, true);
+    assert.equal((await store.readDoc('doc-a')).latest.content, '有内容');
+  });
+});
+
+test('显式 allowEmpty 时才允许清空（用户确实想清空的情况）', async () => {
+  await withStore(async (store) => {
+    await store.saveDoc('doc-a', '要清空的内容');
+    const cleared = await store.saveDoc('doc-a', '', { allowEmpty: true });
+    assert.equal(cleared.emptyRejected, undefined);
+    assert.equal(cleared.latest.n, 2);
+    assert.equal(cleared.latest.content, '');
+    assert.equal((await store.readDoc('doc-a')).latest.content, '');
+  });
+});
+
+test('空文档之间互相覆盖不受限制（首版为空是合法的）', async () => {
+  await withStore(async (store) => {
+    await store.saveDoc('doc-a', '');
+    const again = await store.saveDoc('doc-a', '');
+    assert.equal(again.emptyRejected, undefined);
+    assert.equal(again.unchanged, true);
+  });
+});
+
 test('落盘的是真实 JSON 文件，且拒绝路径穿越', async () => {
   await withStore(async (store, dir) => {
     await store.saveDoc('doc-a', '内容');
