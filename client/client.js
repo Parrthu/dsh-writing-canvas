@@ -103,9 +103,18 @@ window.__ModuleLoader__.load({
   font-size: 15px; line-height: 1.85; outline: none; }
 .wcv-root--pane .wcv-editor { font-size: 14px; padding: 12px 14px; }
 .wcv-editor:focus { border-color: var(--dsw-alias-brand-primary, #4d6bfe); }
-.wcv-banner { margin: 0 14px 8px; padding: 8px 11px; border-radius: 8px; font-size: 12px; line-height: 1.6;
+.wcv-banner { position: relative; margin: 0 14px 8px; padding: 8px 30px 8px 11px; border-radius: 8px;
+  font-size: 12px; line-height: 1.6;
   border: 1px solid var(--dsw-alias-border-l1, rgba(128,128,128,0.24));
   background: var(--dsw-alias-bg-layer-1, rgba(128,128,128,0.07)); color: var(--dsw-alias-label-secondary, #6b6b6b); }
+.wcv-bannerText { display: block; }
+.wcv-bannerClose { position: absolute; top: 4px; right: 6px; width: 20px; height: 20px;
+  display: inline-flex; align-items: center; justify-content: center;
+  font: inherit; font-size: 15px; line-height: 1; padding: 0; cursor: pointer;
+  border: none; border-radius: 999px; background: transparent;
+  color: var(--dsw-alias-label-secondary, #6b6b6b); }
+.wcv-bannerClose:hover { background: var(--dsw-alias-bg-layer-2, rgba(128,128,128,0.16));
+  color: var(--dsw-alias-label-primary, #1a1a1a); }
 .wcv-banner--warn { border-color: var(--dsw-alias-state-warn-primary, #d9822b); color: var(--dsw-alias-label-primary, #1a1a1a); }
 .wcv-banner--error { border-color: var(--dsw-alias-state-error-primary, #d93025); color: var(--dsw-alias-state-error-primary, #d93025); }
 .wcv-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 7px; }
@@ -130,7 +139,7 @@ window.__ModuleLoader__.load({
   font-size: 11.5px; color: var(--dsw-alias-label-secondary, #6b6b6b); }
 /* 类型 / 格式集：并进工具栏的 chip 按钮。
    外观是按钮，底下压着一个透明原生 select——键盘与无障碍能力都不丢。 */
-.wcv-meta { position: relative; display: inline-flex; align-items: center; gap: 4px;
+.wcv-meta { position: relative; box-sizing: border-box; display: inline-flex; align-items: center; gap: 4px;
   font-size: 12px; line-height: 1; height: 26px; padding: 0 9px; border-radius: 999px;
   cursor: pointer; white-space: nowrap; max-width: 190px;
   border: 1px solid var(--dsw-alias-border-l1, rgba(128,128,128,0.3));
@@ -168,8 +177,8 @@ window.__ModuleLoader__.load({
 .wcv-toolbar { flex: none; display: flex; align-items: center; gap: 4px; flex-wrap: wrap;
   padding: 6px 14px; border-bottom: 1px solid var(--dsw-alias-border-l1, rgba(128,128,128,0.28)); }
 .wcv-root--pane .wcv-toolbar { padding: 5px 10px; gap: 3px; }
-.wcv-tool { font: inherit; font-size: 12.5px; line-height: 1; min-width: 26px; height: 26px;
-  padding: 0 6px; border-radius: 6px; cursor: pointer; border: 1px solid transparent;
+.wcv-tool { box-sizing: border-box; font: inherit; font-size: 12.5px; line-height: 1; min-width: 26px;
+  height: 26px; padding: 0 6px; border-radius: 999px; cursor: pointer; border: 1px solid transparent;
   background: transparent; color: var(--dsw-alias-label-secondary, #6b6b6b); }
 .wcv-tool:hover { background: var(--dsw-alias-bg-layer-2, rgba(128,128,128,0.12));
   color: var(--dsw-alias-label-primary, #1a1a1a); }
@@ -281,13 +290,20 @@ window.__ModuleLoader__.load({
   border: 1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.35));
   background: var(--dsw-alias-bg-base, #fff); color: inherit; }
 .wcv-annoActions { display: flex; gap: 5px; flex-wrap: wrap; }
-.wcv-mini { font: inherit; font-size: 11.5px; padding: 2px 8px; border-radius: 5px; cursor: pointer;
-  border: 1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.35));
-  background: transparent; color: inherit; }
+.wcv-mini { box-sizing: border-box; display: inline-flex; align-items: center; justify-content: center;
+  font: inherit; font-size: 12px; height: 26px; padding: 0 10px; border-radius: 999px;
+  cursor: pointer; white-space: nowrap;
+  border: 1px solid var(--dsw-alias-border-l1, rgba(128,128,128,0.3));
+  background: var(--dsw-alias-bg-layer-1, rgba(128,128,128,0.06));
+  color: var(--dsw-alias-label-secondary, #6b6b6b); }
 .wcv-mini:hover { border-color: var(--dsw-alias-brand-primary, #4d6bfe); }
-.wcv-iconBtn { display: inline-flex; align-items: center; justify-content: center;
-  width: 26px; height: 26px; padding: 0; border-radius: 7px; cursor: pointer;
-  border: 1px solid transparent; background: transparent;
+/* 工具栏上的所有按钮统一成同一尺寸、同一胶囊形状：
+   chip（.wcv-meta）、图标按钮（.wcv-iconBtn）、文字按钮（.wcv-mini）都是 26px 高、全圆角，
+   边框与底色一致。此前三种按钮各有各的圆角与留白，排在一起显得很杂。 */
+.wcv-iconBtn { box-sizing: border-box; display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; padding: 0; border-radius: 999px; cursor: pointer;
+  border: 1px solid var(--dsw-alias-border-l1, rgba(128,128,128,0.3));
+  background: var(--dsw-alias-bg-layer-1, rgba(128,128,128,0.06));
   color: var(--dsw-alias-label-secondary, #6b6b6b); flex: none; }
 .wcv-iconBtn:hover:not(:disabled) { background: var(--dsw-alias-bg-layer-2, rgba(128,128,128,0.14));
   color: var(--dsw-alias-label-primary, #1a1a1a); }
@@ -801,6 +817,23 @@ window.__ModuleLoader__.load({
                 ? -1
                 : Math.round(Number.parseFloat(window.getComputedStyle(one('.wcv-highlightInner')).paddingRight) || 0),
             scrollbarWidth: editor === null ? -1 : Math.round(editor.offsetWidth - editor.clientWidth),
+            // 工具栏按钮尺寸是否统一（用户要求「所有按钮保持一致大小、同样的胶囊样式」）。
+            toolButtonHeights: [
+              ...new Set(
+                [...all('.wcv-toolRow button'), ...all('.wcv-toolRow label')].map((node) =>
+                  Math.round(node.getBoundingClientRect().height),
+                ),
+              ),
+            ],
+            toolButtonRadii: [
+              ...new Set(
+                [...all('.wcv-toolRow button'), ...all('.wcv-toolRow label')].map(
+                  (node) => window.getComputedStyle(node).borderRadius,
+                ),
+              ),
+            ],
+            legacyCheckButton: all('.wcv-iconBtn').length,
+            bannerClose: one('.wcv-bannerClose') !== null,
           });
 
           // 开发期交互自检：程序化地选中一段文字，确认浮动工具条真的出现。
@@ -1067,6 +1100,30 @@ window.__ModuleLoader__.load({
       };
 
       /**
+       * 选中一个格式集就**立即生效**。
+       *
+       * 原先是「选中只改本地状态，必须再点一下对勾才写入文档」，用户反馈那个对勾
+       * 又丑又多余（而且它的 Markdown 分支还写错了：提交的是 currentTypeId 而不是 set）。
+       * 现在选中即写进文档 meta，不生成版本、不动正文。
+       */
+      const chooseSet = async (setId) => {
+        setExportSpec(setId);
+        setExportResult(null);
+        try {
+          const { ok, data } = await apiPost('/doc/format', { ...targetBody(target), setId });
+          if (!ok || data?.ok !== true) throw new Error(data?.error ?? '保存失败');
+          setDoc((current) =>
+            current === null
+              ? current
+              : { ...current, meta: { ...(current.meta ?? {}), format: { ...(current.meta?.format ?? {}), set: setId === '' ? undefined : setId } } },
+          );
+          report('format:chosen', { setId });
+        } catch (error) {
+          setMessage(`保存格式集失败：${String(error)}`);
+        }
+      };
+
+      /**
        * 打开「提示词」面板时把该类型的当前生效提示词拉下来。
        * 用户改过就是他那版，否则是内置拼装出来的默认值——都能继续编辑。
        */
@@ -1176,21 +1233,17 @@ window.__ModuleLoader__.load({
        * 一键套用格式：把当前正文按所选规格生成 DOCX，并展示**回读校验**的真实结果。
        * 校验未通过时如实显示失败项，不谎报成功。
        */
+      /**
+       * 导出 DOCX。
+       *
+       * 这里只做导出。原先它还兼着「确认使用这个格式集」，所以有一个 Markdown 分支；
+       * 但那个分支写错了（提交的是 currentTypeId，不是 set），而且现在**选中格式集即生效**，
+       * 不再需要确认动作，那个分支已经走不到——删掉，免得留下看着能用、实际是死路的代码。
+       */
       const applyFormatSpec = async () => {
         setExporting(true);
         setExportResult(null);
         try {
-          if (currentSet !== undefined && currentSet.kind === 'markdown') {
-            // Markdown 体例不需要导出文件：把体例写进文档元信息，供 AI 遵循。
-            const { ok, data } = await apiPost('/doc/type', { ...targetBody(target), typeId: currentTypeId });
-            void ok;
-            void data;
-            setMessage(
-              `「${currentSet.name}」是 Markdown 体例：已记录为本文体例，AI 会按它的标题层级与分隔线来写；不需要导出文件。`,
-            );
-            setExporting(false);
-            return;
-          }
           const { ok, data } = await apiPost('/export', {
             ...targetBody(target),
             specId: exportSpec === '' ? undefined : exportSpec,
@@ -1627,8 +1680,27 @@ window.__ModuleLoader__.load({
             )
           : null,
 
+        // 提示条：必须能关掉。此前它只能被下一条消息替换，用户点完「+ Set」
+        // 或导出后那段说明就一直挂在那儿，怎么都去不掉。
         message !== null
-          ? h('div', { className: `wcv-banner${status === 'error' ? ' wcv-banner--error' : ''}` }, message)
+          ? h(
+              'div',
+              { className: `wcv-banner${status === 'error' ? ' wcv-banner--error' : ''}` },
+              h('span', { className: 'wcv-bannerText' }, message),
+              h(
+                'button',
+                {
+                  className: 'wcv-bannerClose',
+                  title: '关闭这条提示',
+                  'aria-label': '关闭这条提示',
+                  onClick: () => {
+                    setMessage(null);
+                    if (status === 'error') setStatus('ready');
+                  },
+                },
+                '×',
+              ),
+            )
           : null,
 
         // 提示词面板：不再是只读的硬约束清单，改成**可编辑**——
@@ -1775,10 +1847,7 @@ window.__ModuleLoader__.load({
                   {
                     className: 'wcv-metaSelect wcv-select',
                     value: currentSetId,
-                    onChange: (event) => {
-                      setExportSpec(event.target.value);
-                      setExportResult(null);
-                    },
+                    onChange: (event) => void chooseSet(event.target.value),
                   },
                   ...sets.map((item) =>
                     h(
@@ -1789,21 +1858,17 @@ window.__ModuleLoader__.load({
                   ),
                 ),
               ),
+              // 只有 DOCX 才需要一个动作按钮（导出是真动作）。
+              // 原先那个对勾是「确认使用这个 set」——现在选中即生效，它没有存在理由。
               currentSet !== undefined && currentSet.kind === 'docx'
                 ? iconButton({
                     icon: exporting ? IconRefresh : IconDownload,
-                    title: exporting ? '正在套用…' : '套用这个版式并导出 DOCX（生成后会回读校验）',
+                    title: exporting ? '正在导出…' : '导出 DOCX（生成后会回读校验）',
                     primary: true,
                     disabled: exporting,
                     onClick: () => void applyFormatSpec(),
                   })
-                : iconButton({
-                    icon: IconCheck,
-                    title: '把这个 Markdown 体例设为本文体例',
-                    primary: true,
-                    disabled: currentSetId === '',
-                    onClick: () => void applyFormatSpec(),
-                  }),
+                : null,
               currentSet !== undefined && currentSet.source === 'user'
                 ? iconButton({
                     icon: IconTrash,
@@ -1815,20 +1880,16 @@ window.__ModuleLoader__.load({
                     },
                   })
                 : null,
-              h(
-                'button',
-                {
-                  className: 'wcv-mini',
-                  title: '告诉我你想要的格式，我把它做成一个可复用的格式集',
-                  onClick: () =>
-                    setMessage(
-                      '想新建格式集？直接在对话里告诉我：' +
-                        '「做成格式集：正文小四宋体、标题黑体、行距 1.5 倍」或「按这个模板的样式做一套」。' +
-                        '我会整理成 Set 存进这个工作区，之后在这里一键选用。',
-                    ),
-                },
-                '+ Set',
-              ),
+              iconButton({
+                icon: IconPlus,
+                title: '新建格式集：在对话里告诉我你想要的格式',
+                onClick: () =>
+                  setMessage(
+                    '想新建格式集？直接在对话里告诉我：' +
+                      '「做成格式集：正文小四宋体、标题黑体、行距 1.5 倍」或「按这个模板的样式做一套」。' +
+                      '我会整理成 Set 存进这个工作区，之后在这里一键选用。',
+                  ),
+              }),
               exportResult !== null
                 ? h(
                     'span',
@@ -2246,7 +2307,6 @@ window.__ModuleLoader__.load({
     const IconChat = makeIcon(['M21 12a8 8 0 0 1-8 8H7l-4 3v-6a8 8 0 0 1 8-8h2a8 8 0 0 1 8 3Z']);
     const IconDoc = makeIcon(['M7 3h7l5 5v13H7z', 'M14 3v5h5']);
     const IconTrash = makeIcon(['M4 7h16', 'M9 7V5h6v2', 'M6 7l1 13h10l1-13']);
-    const IconCheck = makeIcon(['M4 12.5 9 17.5 20 6.5']);
     const IconRefresh = makeIcon(['M20 12a8 8 0 1 1-2.3-5.6', 'M20 4v5h-5']);
     const IconDownload = makeIcon(['M12 3v12', 'M7 11l5 5 5-5', 'M4 20h16']);
 

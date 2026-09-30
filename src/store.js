@@ -188,6 +188,45 @@ export class DocumentStore {
   }
 
   /**
+   * 只改文档的格式集，不产生新版本。
+   *
+   * 用户在画布上**选中一个格式集就立即生效**（不再需要点对勾确认），
+   * 所以这条路径必须和 setType 一样：只写 meta、绝不动正文、绝不生成版本。
+   *
+   * @param docId - 文档标识。
+   * @param setId - 格式集 id；传空串表示回到默认。
+   * @returns 写入后的 meta。
+   */
+  async setFormat(docId, setId) {
+    assertSafeDocId(docId);
+    return this.#enqueue(docId, async () => {
+      const dir = this.docDir(docId);
+      await mkdir(dir, { recursive: true });
+      const metaPath = join(dir, 'meta.json');
+      const existing = existsSync(metaPath) ? JSON.parse(await readFile(metaPath, 'utf8')) : null;
+      const at = new Date().toISOString();
+      const id = typeof setId === 'string' ? setId.trim() : '';
+      // 传空串就删掉 set 字段，读的时候会退回第一个可用格式集。
+      const nextFormat = { ...(existing?.format ?? { kind: 'markdown' }) };
+      if (id === '') delete nextFormat.set;
+      else nextFormat.set = id;
+      const meta = {
+        docId,
+        title: existing?.title ?? '未命名文档',
+        format: nextFormat,
+        createdAt: existing?.createdAt ?? at,
+        updatedAt: at,
+        latest: existing?.latest ?? 0,
+        latestHash: existing?.latestHash ?? null,
+        versionCount: existing?.versionCount ?? 0,
+        writingType: existing?.writingType,
+      };
+      await writeJsonAtomic(metaPath, meta);
+      return meta;
+    });
+  }
+
+  /**
    * 列出全部版本，按版本号升序（不含正文，供历史列表使用）。
    * @param docId - 文档标识。
    * @returns 版本摘要数组。

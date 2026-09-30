@@ -129,3 +129,43 @@ test('共享缓存：取消订阅后不再收到通知', () => {
 test('类型注册表里确实有内置类型（覆盖测试的前提）', () => {
   assert.ok(listTypes().some((type) => type.id === 'creative'));
 });
+
+// ---- 格式集：选中即生效（2026-10-01 用户要求去掉对勾）------------------------
+
+test('格式集：setFormat 只写 meta，不产生新版本、不动正文', async () => {
+  const { DocumentStore } = await import('../src/store.js');
+  const { mkdtemp } = await import('node:fs/promises');
+  const dir = await mkdtemp(join(tmpdir(), 'writing-format-'));
+  try {
+    const store = new DocumentStore(dir, '.writing-canvas');
+    await store.saveDoc('doc-a', '正文内容', { title: '标题' });
+    await store.setType('doc-a', 'creative');
+    const before = await store.readDoc('doc-a');
+
+    const meta = await store.setFormat('doc-a', 'md-standard');
+    assert.equal(meta.format.set, 'md-standard');
+    assert.equal(meta.writingType, 'creative', '改格式不能把写作类型冲掉');
+
+    const after = await store.readDoc('doc-a');
+    assert.equal(after.latest.n, before.latest.n, '改格式不得产生新版本');
+    assert.equal(after.latest.content, '正文内容', '正文必须一字不动');
+    assert.equal(after.meta.title, '标题', '标题保持');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('格式集：传空串即清掉选择，回到默认', async () => {
+  const { DocumentStore } = await import('../src/store.js');
+  const { mkdtemp } = await import('node:fs/promises');
+  const dir = await mkdtemp(join(tmpdir(), 'writing-format-'));
+  try {
+    const store = new DocumentStore(dir, '.writing-canvas');
+    await store.saveDoc('doc-a', '正文');
+    await store.setFormat('doc-a', 'md-standard');
+    const meta = await store.setFormat('doc-a', '');
+    assert.equal(meta.format.set, undefined, '空串要删掉 set 字段而不是存空值');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

@@ -498,6 +498,21 @@ export function createApiHandler({
       }
 
       // ---- 设定写作类型（界面里用户直接选）--------------------------------
+      // ---- 选中格式集即生效（不再需要点确认按钮）------------------------
+      if (route === '/doc/format' && method === 'POST') {
+        const body = await readJsonBody(req, 64 * 1024);
+        const target = await resolveTarget(body);
+        if (target.error !== undefined) {
+          sendJson(res, 400, { error: target.error });
+          return;
+        }
+        const setId = typeof body.setId === 'string' ? body.setId : '';
+        // 只记录选择，不动正文、不产生版本——格式集是文档级设置。
+        const meta = await storeFor(target.workspacePath).setFormat(target.docId, setId);
+        sendJson(res, 200, { ok: true, set: meta.format?.set ?? null });
+        return;
+      }
+
       if (route === '/doc/type' && method === 'POST') {
         const body = await readJsonBody(req, 64 * 1024);
         const target = await resolveTarget(body);

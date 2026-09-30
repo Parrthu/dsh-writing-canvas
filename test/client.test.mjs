@@ -512,3 +512,63 @@ test('回归：镜像层要补偿 textarea 的滚动条宽度（否则批注色�
   assert.ok(calls.length >= 3, `同步点至少三处，实际 ${calls.length} 处`);
   assert.match(CLIENT_SOURCE, /\}, \[text\]\);/, '内容变化后要重算');
 });
+
+// ---- 2026-10-01 用户反馈：格式集确认按钮 + 提示条关不掉 + 按钮尺寸不齐 --------
+
+test('回归：选中格式集即生效，不再需要确认按钮', () => {
+  // 用户原话：「把对勾取消掉，选中什么就默认确定使用这个 set」。
+  assert.match(CLIENT_SOURCE, /const chooseSet = async/, '选中要走 chooseSet');
+  assert.match(CLIENT_SOURCE, /apiPost\('\/doc\/format'/, '选中要立即持久化到文档');
+  assert.match(
+    CLIENT_SOURCE,
+    /onChange: \(event\) => void chooseSet\(event\.target\.value\)/,
+    '下拉的 onChange 必须直接落地，而不是只改本地状态',
+  );
+  assert.ok(
+    !CLIENT_SOURCE.includes('IconCheck'),
+    '对勾按钮与其图标都应删掉（含死代码）',
+  );
+});
+
+test('回归：确认按钮删掉后，applyFormatSpec 只做导出，不留死分支', () => {
+  const fn = CLIENT_SOURCE.slice(CLIENT_SOURCE.indexOf('const applyFormatSpec'));
+  const body = fn.slice(0, fn.indexOf('\n      };'));
+  assert.ok(
+    !body.includes('currentTypeId'),
+    'Markdown 那个「确认体例」分支已走不到（且原先写错成 currentTypeId），必须删掉',
+  );
+  assert.match(body, /apiPost\('\/export'/, '仍然要能导出 DOCX');
+});
+
+test('回归：+ Set 改成加号图标按钮', () => {
+  assert.match(CLIENT_SOURCE, /icon: IconPlus[\s\S]{0,200}新建格式集/, '应是加号图标按钮');
+  assert.ok(!CLIENT_SOURCE.includes("'+ Set'"), '不再有「+ Set」文字按钮');
+});
+
+test('回归：提示条必须能关掉', () => {
+  // 用户原话：「点了对勾或者加 set 之后，这个上方的说明文字就不会消失了，怎么都去不掉」。
+  assert.match(CLIENT_SOURCE, /wcv-bannerClose/, '提示条要有关闭按钮');
+  assert.match(
+    CLIENT_SOURCE,
+    /wcv-bannerClose[\s\S]{0,400}?setMessage\(null\)/,
+    '关闭按钮必须真的清掉 message',
+  );
+});
+
+test('回归：工具栏按钮尺寸与形状统一为同款胶囊', () => {
+  // 用户原话：「所有的按钮保持一致大小，同样的胶囊样式」。
+  const icon = CLIENT_SOURCE.slice(CLIENT_SOURCE.indexOf('.wcv-iconBtn {'));
+  const iconBlock = icon.slice(0, icon.indexOf('}'));
+  assert.match(iconBlock, /width: 26px; height: 26px;/, '图标按钮 26×26');
+  assert.match(iconBlock, /border-radius: 999px/, '图标按钮要是胶囊');
+
+  const mini = CLIENT_SOURCE.slice(CLIENT_SOURCE.indexOf('.wcv-mini {'));
+  const miniBlock = mini.slice(0, mini.indexOf('}'));
+  assert.match(miniBlock, /height: 26px/, '文字按钮同为 26px 高');
+  assert.match(miniBlock, /border-radius: 999px/, '文字按钮也要胶囊');
+
+  const meta = CLIENT_SOURCE.slice(CLIENT_SOURCE.indexOf('.wcv-meta {'));
+  const metaBlock = meta.slice(0, meta.indexOf('}'));
+  assert.match(metaBlock, /height: 26px/, 'chip 同为 26px 高');
+  assert.match(metaBlock, /border-radius: 999px/, 'chip 也是胶囊');
+});
