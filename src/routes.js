@@ -324,6 +324,11 @@ export function createApiHandler({
             note: saved.latest.note,
           });
         }
+        // 声明是 Agent 在写时，同步驱动界面上的「撰写中」指示；
+        // final === false 表示后面还有内容，界面会一直显示到收到 final 为止。
+        if (saved.latest.source === 'agent') {
+          bus?.setWriting?.(target.docId, body.final === false, typeof body.note === 'string' ? body.note : '');
+        }
         sendJson(res, 200, {
           ok: true,
           docId: target.docId,
@@ -484,6 +489,19 @@ export function createApiHandler({
         const annotations = await store.list(target.docId, doc?.latest?.content);
         bus?.publishAnnotationsChanged?.(target.docId, { count: annotations.length });
         sendJson(res, 200, { ok: removed, annotations });
+        return;
+      }
+
+      // ---- 撰写状态（外部驱动可据此点亮界面上的「撰写中」，无需改动正文）----
+      if (route === '/doc/writing' && method === 'POST') {
+        const body = await readJsonBody(req, 64 * 1024);
+        const target = await resolveTarget(body);
+        if (target.error !== undefined) {
+          sendJson(res, 400, { error: target.error });
+          return;
+        }
+        bus?.setWriting?.(target.docId, body.active === true, typeof body.note === 'string' ? body.note : '');
+        sendJson(res, 200, { ok: true, docId: target.docId, writing: bus?.writingState?.(target.docId) ?? null });
         return;
       }
 

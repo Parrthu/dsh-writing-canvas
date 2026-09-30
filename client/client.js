@@ -527,12 +527,18 @@ window.__ModuleLoader__.load({
        *
        * 这是「AI 一边写、画布一边长出来」的关键：宿主每次落盘都会推 doc-changed，
        * 我们据此拉取新版本。用户正在编辑时**不覆盖**他的内容，只提示有新版。
+       *
+       * 自愈式重连（必须有）：宿主插件每次热重载都会短暂摘掉 /events 路由，
+       * 浏览器此时拿到 404，而按 EventSource 规范**永久放弃重连**。不自己重连的话，
+       * 实时能力会静默失效——用户看到的就是「说好的流式没了」。
        */
       React.useEffect(() => {
         if (typeof EventSource !== 'function') return undefined;
-        const query = targetQuery(target);
-        const source = new EventSource(`${API_BASE}/events?${query.toString()}`);
+        const query = targetQuery(target).toString();
+        let source = null;
+        let retryTimer = null;
         let disposed = false;
+        let attempt = 0;
 
         const refresh = async () => {
           const { ok, data } = await apiGet('/doc', targetQuery(target));
@@ -547,34 +553,71 @@ window.__ModuleLoader__.load({
           revealContent(data.latest?.content ?? '');
         };
 
-        source.onmessage = (event) => {
-          let payload = null;
+        const scheduleRetry = () => {
+          if (disposed) return;
           try {
-            payload = JSON.parse(event.data);
+            source?.close();
           } catch {
+            // 忽略
+          }
+          source = null;
+          const delay = Math.min(15_000, 800 * Math.max(1, attempt));
+          retryTimer = setTimeout(connect, delay);
+        };
+
+        function connect() {
+          if (disposed) return;
+          attempt += 1;
+          try {
+            source = new EventSource(`${API_BASE}/events?${query}`);
+          } catch (error) {
+            report('sse:error', { phase: 'construct', reason: describe(error), attempt });
+            scheduleRetry();
             return;
           }
-          if (payload?.type === 'doc-changed') void refresh();
-          else if (payload?.type === 'writing') {
-            setWriting({
-              active: payload.active === true,
-              startedAt: payload.startedAt ?? null,
-              note: payload.note ?? '',
-            });
-          } else if (payload?.type === 'annotations-changed') {
-            void apiGet('/annotations', targetQuery(target)).then(({ ok, data }) => {
-              if (!disposed && ok) setAnnotations(data.annotations ?? []);
-            });
-          }
-        };
-        source.onerror = () => {
-          // EventSource 会自动重连，这里不额外处理，避免制造噪音。
-        };
+          source.onopen = () => {
+            attempt = 0;
+            report('sse:open', {});
+          };
+          source.onmessage = (event) => {
+            let payload = null;
+            try {
+              payload = JSON.parse(event.data);
+            } catch {
+              return;
+            }
+            if (payload?.type === 'doc-changed') void refresh();
+            else if (payload?.type === 'writing') {
+              setWriting({
+                active: payload.active === true,
+                startedAt: payload.startedAt ?? null,
+                note: payload.note ?? '',
+              });
+            } else if (payload?.type === 'annotations-changed') {
+              void apiGet('/annotations', targetQuery(target)).then(({ ok, data }) => {
+                if (!disposed && ok) setAnnotations(data.annotations ?? []);
+              });
+            }
+          };
+          source.onerror = () => {
+            const state = source === null ? -1 : source.readyState;
+            report('sse:error', { readyState: state, attempt });
+            // CLOSED 表示浏览器已经放弃，必须由我们自己重连；
+            // CONNECTING 表示它正在自动重连，交给它即可。
+            if (state === 2 || state === -1) scheduleRetry();
+          };
+        }
+
+        connect();
 
         return () => {
           disposed = true;
-          source.close();
-          report('sse:closed', { docId: target.docId ?? null });
+          if (retryTimer !== null) clearTimeout(retryTimer);
+          try {
+            source?.close();
+          } catch {
+            // 忽略
+          }
         };
       }, [targetKey, applyServer, revealContent]);
 
