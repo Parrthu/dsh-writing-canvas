@@ -1056,6 +1056,30 @@ window.__ModuleLoader__.load({
         });
       };
 
+      /**
+       * 浮动工具条的定位锚点。
+       *
+       * AI 动作进入输入态后，textarea 会因输入框 autoFocus 而失焦，
+       * onBlur 顺手清掉 selection——如果工具栏还挂在 selection 上，
+       * 它连同刚出现的输入框会当场被卸载，用户看到的就是
+       * 「点了改写什么都没出现，还得重新点一次」。
+       * 所以 AI 动作自带选区快照，这里优先用它。
+       */
+      const floatAnchor = aiAction !== null ? { top: aiAction.top, left: aiAction.left } : selection;
+
+      /** 开始一个 AI 选区动作：快照选区，之后不再依赖实时 selection。 */
+      const beginAiAction = (kind) => {
+        if (selection === null) return;
+        setAiDraft('');
+        setAiAction({
+          kind,
+          range: { start: selection.start, end: selection.end },
+          quote: selection.text,
+          top: selection.top,
+          left: selection.left,
+        });
+      };
+
       /** 新建批注（用户在浮动工具条上选了一个 AI 动作或「批注」）。 */
       const addAnnotation = async (kind, instruction, quote, range) => {
         try {
@@ -1091,12 +1115,12 @@ window.__ModuleLoader__.load({
         if (aiAction === null) return;
         const instruction = aiDraft.trim();
         if (instruction === '') return;
-        const range = selection === null ? undefined : { start: selection.start, end: selection.end };
-        const quote = selection?.text ?? '';
+        const pending = aiAction;
         setAiAction(null);
         setAiDraft('');
         setSelection(null);
-        await addAnnotation(aiAction.kind, instruction, quote, range);
+        // 用开始时的快照，不用实时 selection：这中间 textarea 已经失焦过一次。
+        await addAnnotation(pending.kind, instruction, pending.quote, pending.range);
       };
 
       /**
@@ -1247,13 +1271,25 @@ window.__ModuleLoader__.load({
           const { ok, data } = await apiPost('/export', {
             ...targetBody(target),
             specId: exportSpec === '' ? undefined : exportSpec,
+            // 导出前先让用户选保存位置（系统目录选择框）。
+            // 原先固定写进工作区的 exports/，用户没法选，这是明确被提过的问题。
+            chooseDir: true,
           });
+          // 用户在选择框里点了取消：不是错误，安静收场，也不生成文件。
+          if (data?.error === 'cancelled') {
+            setExporting(false);
+            setMessage(null);
+            report('export:cancelled', {});
+            return;
+          }
           setExportResult(data ?? null);
           report('export:done', {
             ok: data?.ok === true,
             specId: data?.specId ?? null,
             failed: data?.verification?.failed ?? null,
             total: data?.verification?.total ?? null,
+            usedDefaultDir: data?.usedDefaultDir === true,
+            pickerUnavailable: data?.pickerUnavailable === true,
           });
           if (data?.ok !== true) {
             setMessage(
@@ -1263,8 +1299,15 @@ window.__ModuleLoader__.load({
             );
             setStatus('error');
           } else {
+            // 保存位置据实播报：没选成 / 没有选择器都要说清楚，不能让用户以为文件在别处。
+            const where =
+              data.usedDefaultDir !== true
+                ? ''
+                : data.pickerUnavailable === true
+                  ? '（当前环境没有可用的目录选择器，已存到工作区的导出目录）'
+                  : '（未选择位置，已存到工作区的导出目录）';
             setMessage(
-              `已按「${data.specLabel}」生成 DOCX，${data.verification.total} 项回读校验全部通过：${data.relativePath}`,
+              `已按「${data.specLabel}」生成 DOCX，${data.verification.total} 项回读校验全部通过：${data.relativePath}${where}`,
             );
             setStatus('ready');
           }
@@ -1863,7 +1906,7 @@ window.__ModuleLoader__.load({
               currentSet !== undefined && currentSet.kind === 'docx'
                 ? iconButton({
                     icon: exporting ? IconRefresh : IconDownload,
-                    title: exporting ? '正在导出…' : '导出 DOCX（生成后会回读校验）',
+                    title: exporting ? '正在导出…' : '导出 DOCX（会先让你选保存位置，生成后回读校验）',
                     primary: true,
                     disabled: exporting,
                     onClick: () => void applyFormatSpec(),
@@ -2053,19 +2096,29 @@ window.__ModuleLoader__.load({
                   onSelect: syncSelection,
                   onKeyUp: syncSelection,
                   onMouseUp: syncSelection,
+                  // 点回正文即取消 AI 输入态：否则输入框会一直挂在上面，
+                  // 用户以为界面卡住了（这正是「点了改写之后再也没法正常选字」的观感）。
+                  onFocus: () => {
+                    if (aiAction !== null) {
+                      setAiAction(null);
+                      setAiDraft('');
+                    }
+                  },
                   onBlur: () => setSelection(null),
                 }),
                 // 选区浮动工具条：格式按钮 + AI 动作。
-                selection !== null
+                floatAnchor !== null
                   ? h(
                       'div',
                       {
                         className: `wcv-float${aiAction !== null ? ' wcv-float--input' : ''}`,
                         style: {
-                          top: `${Math.max(2, selection.top - 42)}px`,
-                          left: `${Math.max(4, selection.left)}px`,
+                          top: `${Math.max(2, floatAnchor.top - 42)}px`,
+                          left: `${Math.max(4, floatAnchor.left)}px`,
                         },
-                        onMouseDown: (event) => event.preventDefault(),
+                        // 输入态**不能** preventDefault：它会阻止输入框获得焦点，
+                        // 结果就是输入框摆在眼前却打不了字。
+                        onMouseDown: aiAction === null ? (event) => event.preventDefault() : undefined,
                       },
                       // 输入态：AI 动作先问要求，再落成批注。
                       aiAction !== null
@@ -2147,10 +2200,7 @@ window.__ModuleLoader__.load({
                                   key: kind,
                                   className: 'wcv-floatBtn wcv-floatBtn--ai',
                                   title: `让 AI 对选中内容${ANNOTATION_KIND_LABEL[kind]}（会先问你要求）`,
-                                  onClick: () => {
-                                    setAiDraft('');
-                                    setAiAction({ kind });
-                                  },
+                                  onClick: () => beginAiAction(kind),
                                 },
                                 ANNOTATION_KIND_LABEL[kind],
                               ),
@@ -2161,10 +2211,7 @@ window.__ModuleLoader__.load({
                                 key: 'comment',
                                 className: 'wcv-floatBtn wcv-floatBtn--ai',
                                 title: '在这段文字上留一条批注，AI 读到后会处理',
-                                onClick: () => {
-                                  setAiDraft('');
-                                  setAiAction({ kind: 'comment' });
-                                },
+                                onClick: () => beginAiAction('comment'),
                               },
                               '批注',
                             ),

@@ -132,6 +132,37 @@ export function apply(ctx, rawConfig) {
     });
   }
 
+  /**
+   * 拉起系统目录选择框，返回选中路径；用户取消返回 null。
+   *
+   * `directoryPicker` 由 dsh-host-directory-picker-* 注册，未必挂载
+   * （远程/无头环境、或该组合没启用），所以这里**不硬依赖**：拿不到就返回
+   * undefined，接口层据此退回默认导出目录并如实标注，而不是假装选过。
+   *
+   * 结果缓存在闭包里：服务通常在启动时就位，之后整场会话复用。
+   */
+  let pickerResolved = false;
+  let pickerService;
+  const pickDirectory = async () => {
+    if (!pickerResolved) {
+      try {
+        pickerService = ctx.get('directoryPicker');
+      } catch {
+        pickerService = undefined;
+      }
+      pickerResolved = true;
+    }
+    if (pickerService === undefined || typeof pickerService.pick !== 'function') return undefined;
+    try {
+      // 不传 signal：目录选择由用户自己决定何时结束，不该被请求超时打断。
+      const picked = await pickerService.pick();
+      return typeof picked === 'string' && picked !== '' ? picked : null;
+    } catch (error) {
+      ctx.logger.warn(`writing-canvas: 目录选择失败，将使用默认导出目录：${String(error)}`);
+      return undefined;
+    }
+  };
+
   // 2) 宿主 API：文档读写、不可变版本、还原、批注、实时事件流。
   ctx.inject(['webServer'], (scoped) => {
     scoped.effect(
@@ -153,6 +184,12 @@ export function apply(ctx, rawConfig) {
             // 提示段的重装由 mode/writing 自己订阅 onOverridesChanged 完成——
             // 那一段挂在 preset 的 agent scope 里，宿主这一层够不着。
             onPromptChanged: () => {},
+            // 服务不可用时返回 null 会与「用户取消」混淆，所以这里把不可用
+            // 直接翻成 undefined，让接口层能分清这两种情况。
+            pickDirectory: async () => {
+              const picked = await pickDirectory();
+              return picked === undefined ? undefined : picked;
+            },
           }),
         }),
       'writing-canvas: 宿主 API 路由',

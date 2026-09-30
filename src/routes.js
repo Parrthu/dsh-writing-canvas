@@ -145,6 +145,7 @@ export function createApiHandler({
   bus,
   logger,
   onPromptChanged,
+  pickDirectory,
 }) {
   /** 同一工作区复用同一个实例（写入链才有意义）。 */
   const stores = new Map();
@@ -251,6 +252,8 @@ export function createApiHandler({
           // 所以这里必须能一眼看出它到底是开是关——「所有任务都被当成写作任务」
           // 就是这么来的。只有写作模式（preset 里的 mode/writing 行）才注入那两段。
           promptInjection: config.injectPrompt === true ? 'on' : 'off',
+          // 导出能否让用户选保存位置，取决于这个服务是否挂载。
+          directoryPicker: typeof pickDirectory === 'function' ? 'available' : 'unavailable',
           subscribers: bus?.size?.() ?? 0,
         });
         return;
@@ -814,6 +817,30 @@ export function createApiHandler({
           return;
         }
 
+        // 保存位置：用户要求导出时能自己选，而不是每次都丢进工作区的默认目录。
+        // chooseDir=true 时经宿主侧的 directoryPicker 拉起系统目录选择框；
+        // 该服务没挂载时退回默认目录，并在响应里如实标注，不假装选过。
+        let outDir;
+        let usedDefaultDir = true;
+        let pickerUnavailable = false;
+        if (body.chooseDir === true) {
+          if (typeof pickDirectory !== 'function') {
+            pickerUnavailable = true;
+          } else {
+            const picked = await pickDirectory();
+            if (picked === null) {
+              // 用户主动取消：不是错误，直接结束，不生成任何文件。
+              sendJson(res, 200, { ok: false, error: 'cancelled', message: '已取消导出。' });
+              return;
+            }
+            outDir = picked;
+            usedDefaultDir = false;
+          }
+        } else if (typeof body.directory === 'string' && body.directory.trim() !== '') {
+          outDir = body.directory.trim();
+          usedDefaultDir = false;
+        }
+
         const report = await exportDocx({
           workspacePath: target.workspacePath,
           stateDir: config.stateDir,
@@ -822,6 +849,7 @@ export function createApiHandler({
           spec: found.spec,
           specId,
           title: doc.meta.title,
+          outDir,
         });
 
         logger?.info?.(
@@ -834,6 +862,9 @@ export function createApiHandler({
           docId: target.docId,
           specLabel: found.spec.label,
           version: doc.latest.n,
+          // 如实汇报保存位置是怎么定的，界面据此给出准确提示。
+          usedDefaultDir,
+          pickerUnavailable,
         });
         return;
       }

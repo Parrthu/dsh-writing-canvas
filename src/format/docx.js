@@ -91,6 +91,7 @@ export function resetPythonCache() {
  * @param options.spec - 格式规格。
  * @param options.specId - 规格 id。
  * @param options.title - 文档标题。
+ * @param options.outDir - 输出目录；省略则落回工作区内的 exports/。
  * @param options.outPath - 输出文件绝对路径。
  * @returns Python 脚本返回的报告对象。
  */
@@ -159,17 +160,42 @@ async function runJob(options) {
  * @param options.title - 文档标题。
  * @returns { ok, file, bytes, verification, warnings } 或 { ok:false, error, message }
  */
+/**
+ * 算出导出文件的落盘路径。
+ *
+ * 抽成纯函数是为了能被单测直接覆盖：这里有两个容易写错的分支——
+ * 用户没选目录（落回工作区 exports/），以及用户把文件存到了工作区之外
+ * （此时不能再按工作区前缀截相对路径，否则会截出一段毫无意义的残路径）。
+ *
+ * @param options.workspacePath - 工作区绝对路径。
+ * @param options.stateDir - 状态目录名。
+ * @param options.outDir - 用户选定的目录；空则落回工作区内的 exports/。
+ * @param options.safeName - 已净化的文件名主干。
+ * @param options.specId - 格式规格 id。
+ * @param options.stamp - 时间戳串。
+ * @returns 绝对输出路径。
+ */
+export function resolveExportPath(options) {
+  const outDir =
+    typeof options.outDir === 'string' && options.outDir.trim() !== ''
+      ? options.outDir.trim()
+      : join(options.workspacePath, options.stateDir, 'exports');
+  return join(outDir, `${options.safeName}-${options.specId}-${options.stamp}.docx`);
+}
+
 export async function exportDocx(options) {
   const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
   const safeName = String(options.title ?? options.docId ?? 'document')
     .replace(/[\\/:*?"<>|\s]+/g, '_')
     .slice(0, 60);
-  const outPath = join(
-    options.workspacePath,
-    options.stateDir,
-    'exports',
-    `${safeName}-${options.specId}-${stamp}.docx`,
-  );
+  const outPath = resolveExportPath({
+    workspacePath: options.workspacePath,
+    stateDir: options.stateDir,
+    outDir: options.outDir,
+    safeName,
+    specId: options.specId,
+    stamp,
+  });
 
   const report = await runJob({
     content: options.content,
@@ -185,8 +211,12 @@ export async function exportDocx(options) {
   return {
     ...report,
     specId: options.specId,
-    // 相对工作区的路径，便于界面显示与用户查找。
-    relativePath: outPath.slice(options.workspacePath.length + 1),
+    // 工作区内的给相对路径（便于界面显示），导出到工作区外则给绝对路径——
+    // 直接用 slice 截会切出一个毫无意义的残路径。
+    relativePath: outPath.startsWith(`${options.workspacePath}/`)
+      ? outPath.slice(options.workspacePath.length + 1)
+      : outPath,
+    outPath,
   };
 }
 

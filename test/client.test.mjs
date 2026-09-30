@@ -414,8 +414,51 @@ test('回归：AI 选区动作不得使用 window.prompt（Electron 不支持，
 test('回归：AI 动作提交后落成带 anchor 的批注', () => {
   const fn = CLIENT_SOURCE.slice(CLIENT_SOURCE.indexOf('const submitAiAction'));
   const body = fn.slice(0, fn.indexOf('\n      };'));
-  assert.match(body, /addAnnotation\(aiAction\.kind/, '提交要落到批注通道');
-  assert.match(body, /start: selection\.start, end: selection\.end/, '批注要带选区位置');
+  assert.match(body, /addAnnotation\(pending\.kind/, '提交要落到批注通道');
+  assert.match(body, /pending\.range/, '批注要带选区位置');
+});
+
+test('回归：AI 输入态不得依赖实时 selection（否则输入框刚出现就被卸载）', () => {
+  // 事故：点「改写」→ 输入框 autoFocus → textarea 失焦 → onBlur 清 selection
+  // → 工具栏挂在 selection 上，连输入框一起被卸载；用户看到「点了没反应」。
+  assert.match(CLIENT_SOURCE, /floatAnchor/, '浮动工具条要有独立锚点');
+  assert.match(
+    CLIENT_SOURCE,
+    /const floatAnchor = aiAction !== null \? \{ top: aiAction\.top, left: aiAction\.left \} : selection/,
+    'AI 动作进行中必须用它的选区快照定位，而不是实时 selection',
+  );
+  assert.match(
+    CLIENT_SOURCE,
+    /floatAnchor !== null\s*\n?\s*\? h\(/,
+    '渲染条件必须看锚点，不能只看 selection',
+  );
+  // 选区快照要带上位置与文本。
+  assert.match(CLIENT_SOURCE, /const beginAiAction = \(kind\) =>/, '进入输入态要经 beginAiAction');
+  const begin = CLIENT_SOURCE.slice(CLIENT_SOURCE.indexOf('const beginAiAction'));
+  const body = begin.slice(0, begin.indexOf('\n      };'));
+  // 注意用词边界而不是 `${field}:`——代码里 kind 用的是简写属性 `kind,`，
+  // 写死冒号会误判（这一点已被实验打脸过一次）。
+  for (const field of ['kind', 'range', 'quote', 'top', 'left']) {
+    assert.ok(new RegExp(`\\b${field}\\b`).test(body), `快照要带上 ${field}`);
+  }
+});
+
+test('回归：AI 输入态不能阻止默认行为，否则输入框拿不到焦点', () => {
+  // 工具栏容器上的 onMouseDown preventDefault 会阻止焦点转移，
+  // 输入框摆在眼前却打不了字。
+  assert.match(
+    CLIENT_SOURCE,
+    /onMouseDown: aiAction === null \? \(event\) => event\.preventDefault\(\) : undefined/,
+    '只有非输入态才 preventDefault',
+  );
+});
+
+test('回归：点回正文要取消 AI 输入态', () => {
+  assert.match(
+    CLIENT_SOURCE,
+    /onFocus: \(\) => \{[\s\S]{0,160}?setAiAction\(null\)/,
+    '点回编辑器应当收起输入框，而不是一直挂着',
+  );
 });
 
 test('回归：新建议到达时自动展开面板（否则用户以为 Agent 没成功）', () => {
