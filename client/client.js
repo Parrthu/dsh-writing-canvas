@@ -640,6 +640,24 @@ window.__ModuleLoader__.load({
       });
     }
 
+    /** 安全取一个可选服务：拿不到就返回 undefined，绝不抛错。 */
+    function optionalService(scoped, name) {
+      let value;
+      try {
+        value = typeof scoped.get === 'function' ? scoped.get(name) : undefined;
+      } catch {
+        value = undefined;
+      }
+      if (value === undefined || value === null) {
+        try {
+          value = scoped[name];
+        } catch {
+          value = undefined;
+        }
+      }
+      return value === null ? undefined : value;
+    }
+
     /**
      * 生成"自动开启画布"的无渲染组件。
      *
@@ -658,8 +676,8 @@ window.__ModuleLoader__.load({
           } catch {
             // 无 localStorage 时退化为「本组件实例内只尝试一次」。
           }
-          const sidebarRight = ctx.get('sidebarRight') ?? ctx.sidebarRight;
-          if (sidebarRight === undefined || sidebarRight === null || typeof sidebarRight.openTab !== 'function') return;
+          const sidebarRight = optionalService(ctx, 'sidebarRight');
+          if (sidebarRight === undefined || typeof sidebarRight.openTab !== 'function') return;
           try {
             sidebarRight.openTab(CANVAS_KIND);
           } catch (error) {
@@ -683,8 +701,8 @@ window.__ModuleLoader__.load({
 
       /** 注册右栏标签页类型（keepMounted = 跨切换保留 body）。 */
       const registerTabType = (scoped) => {
-        const tabs = scoped.get('sidebarRightTabs') ?? scoped.sidebarRightTabs;
-        if (tabs === undefined || tabs === null || typeof tabs.register !== 'function') return;
+        const tabs = optionalService(scoped, 'sidebarRightTabs');
+        if (tabs === undefined || typeof tabs.register !== 'function') return;
         scoped.effect(
           () =>
             tabs.register({
@@ -698,9 +716,13 @@ window.__ModuleLoader__.load({
       };
       registerTabType(ctx);
       // 右栏服务可能在插件之后才就绪，出现时补注册。
-      ctx.on('internal/service', (name) => {
-        if (name === 'sidebarRightTabs') registerTabType(ctx);
-      });
+      try {
+        ctx.on('internal/service', (name) => {
+          if (name === 'sidebarRightTabs') registerTabType(ctx);
+        });
+      } catch {
+        // 没有该事件也不算失败。
+      }
 
       // 形态 A：右栏标签页 body（声明感知注入，右栏存在时才生效）。
       ctx.slots.inject('sidebar.right.pane.tab', () =>
