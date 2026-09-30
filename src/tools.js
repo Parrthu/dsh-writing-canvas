@@ -57,13 +57,21 @@ function renderTypeDetail(type) {
  * @param options.resolveWorkspacePath - 由 sessionId 解析工作区路径。
  * @param options.storeFor - 共享的文档存储工厂。
  * @param options.annotationsFor - 共享的批注存储工厂。
+ * @param options.suggestionsFor - 共享的修改建议存储工厂。
  * @param options.bus - 事件总线（把「撰写中」与新版本推给界面）。
  */
-export function registerWritingTools({ ctx, resolveWorkspacePath, storeFor, annotationsFor, bus }) {
+export function registerWritingTools({
+  ctx,
+  resolveWorkspacePath,
+  storeFor,
+  annotationsFor,
+  suggestionsFor,
+  bus,
+}) {
   /**
    * 解析当前工具调用的目标文档。
    * @param exec - 工具执行元信息。
-   * @returns { sessionId, workspacePath, docId, store, annotations }
+   * @returns { sessionId, workspacePath, docId, store, annotations, suggestions }
    */
   const targetOf = async (exec) => {
     const agent = exec?.agent;
@@ -78,6 +86,7 @@ export function registerWritingTools({ ctx, resolveWorkspacePath, storeFor, anno
       docId: docIdOfSession(sessionId),
       store: storeFor(workspacePath),
       annotations: annotationsFor?.(workspacePath),
+      suggestions: suggestionsFor?.(workspacePath),
     };
   };
 
@@ -113,6 +122,8 @@ export function registerWritingTools({ ctx, resolveWorkspacePath, storeFor, anno
       // 未处理的批注必须让模型看见——这是「用户要你改这里」的唯一传递路径。
       const allAnnotations = annotations === undefined ? [] : await annotations.list(docId, doc?.latest?.content);
       const openAnnotations = allAnnotations.filter((item) => item.status === 'open');
+      const allSuggestions = suggestions === undefined ? [] : await suggestions.list(docId, doc?.latest?.content);
+      const pendingSuggestions = allSuggestions.filter((item) => item.status === 'pending');
       if (doc === null) {
         return {
           exists: false,
@@ -122,6 +133,7 @@ export function registerWritingTools({ ctx, resolveWorkspacePath, storeFor, anno
           hint: '这份文档还不存在。先与用户确认写作类型与要求，再用 writing_canvas_write 写入第一版。',
           versions: [],
           openAnnotations,
+          pendingSuggestions,
         };
       }
       const type = doc.meta.writingType === undefined ? null : getType(doc.meta.writingType);
@@ -455,6 +467,78 @@ export function registerWritingTools({ ctx, resolveWorkspacePath, storeFor, anno
         label: type.label,
         format: meta.format,
         message: `已把文档的写作类型设为「${type.label}」。接下来必须遵守该类型的硬约束；完整约束用 writing_type_list(id="${type.id}") 读取。`,
+      };
+    },
+  });
+
+  // ---------------------------------------------------------------- 修改建议
+  register({
+    name: 'writing_canvas_suggest',
+    description:
+      '对画布正文的某一段**提出修改建议**，但**不改动正文**。用户会在画布上看到原文与建议的对照，并逐条决定接受或拒绝。' +
+      '硬约束：任何对既有正文的改写都必须走这条通道；只有用户接受时才真正写入新版本。' +
+      '新增段落或从零写第一版用 writing_canvas_write，改写用户已有的文字用本工具。',
+    parameters: {
+      type: 'object',
+      properties: {
+        original: { type: 'string', description: '要被替换的原文片段（必须与正文完全一致，逐字复制）' },
+        proposed: { type: 'string', description: '建议改成的内容' },
+        reason: { type: 'string', description: '为什么这样改（用户会看到）' },
+        rangeStart: { type: 'integer', description: '原文在正文中的起始位置（可选，便于精确定位）' },
+        rangeEnd: { type: 'integer', description: '原文在正文中的结束位置（可选）' },
+      },
+      required: ['original', 'proposed'],
+      additionalProperties: false,
+    },
+    output: {
+      schema: { type: 'object' },
+      render: (_args, value) => textOf(value),
+    },
+    async execute(args, exec) {
+      const { docId, store, suggestions } = await targetOf(exec);
+      if (suggestions === undefined) {
+        return { ok: false, message: '建议存储不可用。' };
+      }
+      const doc = await store.readDoc(docId);
+      const content = doc?.latest?.content ?? '';
+      if (content === '') {
+        return { ok: false, message: '正文还是空的，没有可改写的文字。请用 writing_canvas_write 写第一版。' };
+      }
+      if (typeof args.original !== 'string' || args.original === '') {
+        return { ok: false, message: 'original 不能为空：请逐字复制要被替换的原文片段。' };
+      }
+
+      const found = content.indexOf(args.original);
+      if (found === -1) {
+        return {
+          ok: false,
+          message: '原文片段在正文里找不到（必须逐字一致，包括标点与换行）。请先 writing_canvas_read 再复制准确片段。',
+        };
+      }
+      let start = Number.isInteger(args.rangeStart) ? args.rangeStart : found;
+      let end = Number.isInteger(args.rangeEnd)
+        ? args.rangeEnd
+        : start + args.original.length;
+      if (content.slice(start, end) !== args.original) {
+        start = found;
+        end = found + args.original.length;
+      }
+
+      const suggestion = await suggestions.create(docId, {
+        original: args.original,
+        proposed: args.proposed,
+        reason: args.reason,
+        range: { start, end },
+        anchorVersion: doc?.latest?.n ?? null,
+        author: 'agent',
+      });
+      bus?.publishAnnotationsChanged?.(docId, { suggestions: true });
+      return {
+        ok: true,
+        suggestionId: suggestion.id,
+        version: doc?.latest?.n ?? 0,
+        message:
+          '已提交建议。正文未改动——用户会在画布上看到原文与建议的对照，并由他决定接受或拒绝。不要重复提交同一条建议。',
       };
     },
   });

@@ -9,15 +9,17 @@
 
 import { AnnotationStore } from './annotations.js';
 import { DocumentStore } from './store.js';
+import { SuggestionStore } from './suggestions.js';
 
 /**
  * 创建工作区维度的存储工厂。
  * @param config - 已解析配置（需要 stateDir）。
- * @returns { storeFor, annotationsFor }
+ * @returns { storeFor, annotationsFor, suggestionsFor }
  */
 export function createStoreRegistry(config) {
   const documents = new Map();
   const annotations = new Map();
+  const suggestions = new Map();
 
   return {
     /**
@@ -44,6 +46,20 @@ export function createStoreRegistry(config) {
       if (store === undefined) {
         store = new AnnotationStore(workspacePath, config.stateDir);
         annotations.set(workspacePath, store);
+      }
+      return store;
+    },
+
+    /**
+     * 取某工作区的修改建议存储。
+     * @param workspacePath - 工作区绝对路径。
+     * @returns SuggestionStore
+     */
+    suggestionsFor(workspacePath) {
+      let store = suggestions.get(workspacePath);
+      if (store === undefined) {
+        store = new SuggestionStore(workspacePath, config.stateDir);
+        suggestions.set(workspacePath, store);
       }
       return store;
     },

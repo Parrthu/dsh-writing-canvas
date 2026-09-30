@@ -120,10 +120,10 @@ test('高亮分段：把批注区间切成 文本/标记 交替的片段', () =>
     { range: { start: 2, end: 5 }, status: 'open', kind: 'rewrite', anchorLost: false },
   ]);
   assert.deepEqual(
-    segments.map((s) => [s.text, s.mark === true]),
+    segments.map((s) => [s.text, s.mark === false ? false : s.mark]),
     [
       ['前面', false],
-      ['被批注', true],
+      ['被批注', 'note'],
       ['后面', false],
     ],
   );
@@ -143,7 +143,7 @@ test('高亮分段：区间越界会被夹到正文长度内，不会抛错', ()
   ]);
   assert.equal(segments.length, 1);
   assert.equal(segments[0].text, '短');
-  assert.equal(segments[0].mark, true);
+  assert.equal(segments[0].mark, 'note');
 });
 
 test('高亮分段：多条批注按位置排序输出', () => {
@@ -166,4 +166,36 @@ test('键位与修饰键的转换', () => {
     'shift',
     'meta',
   ]);
+});
+
+test('高亮分段：待决定的建议标成 suggestion，不接受已决定的建议', () => {
+  const content = '前面要改的地方后面';
+  const segments = buildHighlightSegments(
+    content,
+    [],
+    [
+      { range: { start: 2, end: 7 }, status: 'pending', anchorLost: false, proposed: '改后的说法' },
+      { range: { start: 0, end: 2 }, status: 'accepted', anchorLost: false, proposed: 'x' },
+    ],
+  );
+  // 已接受的那条不再标记
+  assert.deepEqual(
+    segments.map((s) => [s.text, s.mark === false ? false : s.mark]),
+    [
+      ['前面', false],
+      ['要改的地方', 'suggestion'],
+      ['后面', false],
+    ],
+  );
+});
+
+test('高亮分段：建议不改变文本长度（高亮层必须与输入框逐字对齐）', () => {
+  const content = '原文内容';
+  const segments = buildHighlightSegments(
+    content,
+    [],
+    [{ range: { start: 0, end: 2 }, status: 'pending', anchorLost: false, proposed: '一段长得多得多的替换文字' }],
+  );
+  const joined = segments.map((s) => s.text).join('');
+  assert.equal(joined, content, '拼接结果必须与正文完全一致，否则高亮层会错位');
 });

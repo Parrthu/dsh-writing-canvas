@@ -20,6 +20,7 @@ import { AnnotationStore } from './annotations.js';
 import { exportDocx } from './format/docx.js';
 import { getFormatSpec, listFormatSpecs } from './format/specs.js';
 import { DocumentStore } from './store.js';
+import { SuggestionStore, applySuggestion } from './suggestions.js';
 import { listTypes } from './types/registry.js';
 
 /** API 前缀。 */
@@ -103,12 +104,14 @@ export function createApiHandler({
   listWorkspaces,
   storeFor: sharedStoreFor,
   annotationsFor: sharedAnnotationsFor,
+  suggestionsFor: sharedSuggestionsFor,
   bus,
   logger,
 }) {
   /** 同一工作区复用同一个实例（写入链才有意义）。 */
   const stores = new Map();
   const annotationStores = new Map();
+  const suggestionStores = new Map();
 
   /**
    * 浏览器侧诊断上报（内存环形缓冲，最多 50 条）。
@@ -137,6 +140,17 @@ export function createApiHandler({
       if (store === undefined) {
         store = new AnnotationStore(workspacePath, config.stateDir);
         annotationStores.set(workspacePath, store);
+      }
+      return store;
+    });
+
+  const suggestionsFor =
+    sharedSuggestionsFor ??
+    ((workspacePath) => {
+      let store = suggestionStores.get(workspacePath);
+      if (store === undefined) {
+        store = new SuggestionStore(workspacePath, config.stateDir);
+        suggestionStores.set(workspacePath, store);
       }
       return store;
     });
@@ -179,11 +193,20 @@ export function createApiHandler({
         sendJson(res, 200, {
           ok: true,
           plugin: 'dsh-writing-canvas',
-          phase: 'P3',
+          phase: 'P4',
           release: '0.2.0-rc.2',
           stateDir: config.stateDir,
           constraintsSection: 'writing-canvas:constraints',
           subscribers: bus?.size?.() ?? 0,
+        });
+        return;
+      }
+
+      // ---- 界面开关（开发期自检等）----------------------------------------
+      if (route === '/ui-flags' && method === 'GET') {
+        sendJson(res, 200, {
+          ok: true,
+          interactionSelfTest: config.interactionSelfTest === true,
         });
         return;
       }
@@ -256,6 +279,7 @@ export function createApiHandler({
         const doc = await store.readDoc(target.docId);
         const versions = doc === null ? [] : await store.listVersions(target.docId);
         const annotations = await annotationsFor(target.workspacePath).list(target.docId, doc?.latest?.content);
+        const suggestions = await suggestionsFor(target.workspacePath).list(target.docId, doc?.latest?.content);
         sendJson(res, 200, {
           exists: doc !== null,
           docId: target.docId,
@@ -264,6 +288,7 @@ export function createApiHandler({
           latest: doc?.latest ?? null,
           versions,
           annotations,
+          suggestions,
           writing: bus?.writingState?.(target.docId) ?? { active: false, startedAt: null, note: '' },
         });
         return;
@@ -560,6 +585,106 @@ export function createApiHandler({
           docId: target.docId,
           specLabel: found.spec.label,
           version: doc.latest.n,
+        });
+        return;
+      }
+
+      // ---- 修改建议：AI 只能提议，是否应用由用户决定 ----------------------
+      if (route === '/suggestions' && method === 'GET') {
+        const target = await resolveTarget(paramsFromUrl(url));
+        if (target.error !== undefined) {
+          sendJson(res, 400, { error: target.error });
+          return;
+        }
+        const doc = await storeFor(target.workspacePath).readDoc(target.docId);
+        const suggestions = await suggestionsFor(target.workspacePath).list(target.docId, doc?.latest?.content);
+        sendJson(res, 200, { ok: true, docId: target.docId, suggestions });
+        return;
+      }
+
+      if (route === '/suggestions' && method === 'POST') {
+        const body = await readJsonBody(req, 256 * 1024);
+        const target = await resolveTarget(body);
+        if (target.error !== undefined) {
+          sendJson(res, 400, { error: target.error });
+          return;
+        }
+        const store = suggestionsFor(target.workspacePath);
+        const suggestion = await store.create(target.docId, {
+          original: body.original,
+          proposed: body.proposed,
+          reason: body.reason,
+          range: body.range,
+          anchorVersion: body.anchorVersion,
+          author: body.author,
+        });
+        const doc = await storeFor(target.workspacePath).readDoc(target.docId);
+        bus?.publishAnnotationsChanged?.(target.docId, { suggestions: true });
+        sendJson(res, 200, {
+          ok: true,
+          suggestion,
+          suggestions: await store.list(target.docId, doc?.latest?.content),
+        });
+        return;
+      }
+
+      if (route === '/suggestions/decide' && method === 'POST') {
+        const body = await readJsonBody(req, 256 * 1024);
+        const target = await resolveTarget(body);
+        if (target.error !== undefined) {
+          sendJson(res, 400, { error: target.error });
+          return;
+        }
+        const store = suggestionsFor(target.workspacePath);
+        const suggestion = await store.get(target.docId, body.id);
+        if (suggestion === null) {
+          sendJson(res, 404, { error: 'suggestion-not-found', id: body.id });
+          return;
+        }
+        if (body.action === 'reject') {
+          const rejected = await store.mark(target.docId, suggestion.id, 'rejected');
+          const doc = await storeFor(target.workspacePath).readDoc(target.docId);
+          sendJson(res, 200, {
+            ok: true,
+            suggestion: rejected,
+            applied: false,
+            suggestions: await store.list(target.docId, doc?.latest?.content),
+          });
+          return;
+        }
+
+        // 接受：把 proposed 写进正文（生成新版本）。这是**唯一**由建议改动正文的路径。
+        const docStore = storeFor(target.workspacePath);
+        const doc = await docStore.readDoc(target.docId);
+        if (doc === null) {
+          sendJson(res, 400, { error: 'document-empty' });
+          return;
+        }
+        const applied = applySuggestion(doc.latest.content, suggestion);
+        if (applied.ok !== true) {
+          sendJson(res, 409, { error: 'anchor-lost', message: applied.message, suggestion });
+          return;
+        }
+        const saved = await docStore.saveDoc(target.docId, applied.content, {
+          source: 'user',
+          note: `接受建议：${suggestion.reason || suggestion.original.slice(0, 20)}`,
+          baseVersion: doc.latest.n,
+          allowEmpty: true,
+        });
+        if (saved.conflict === true || saved.emptyRejected === true) {
+          sendJson(res, 409, { error: 'conflict', latest: saved.latest });
+          return;
+        }
+        const accepted = await store.mark(target.docId, suggestion.id, 'accepted');
+        bus?.publishDocChanged?.(target.docId, { version: saved.latest.n, source: 'suggestion' });
+        sendJson(res, 200, {
+          ok: true,
+          suggestion: accepted,
+          applied: true,
+          message: applied.message,
+          latest: saved.latest,
+          versions: await docStore.listVersions(target.docId),
+          suggestions: await store.list(target.docId, saved.latest.content),
         });
         return;
       }

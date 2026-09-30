@@ -177,6 +177,20 @@ window.__ModuleLoader__.load({
 .wcv-mark { background: rgba(255, 176, 32, 0.28); border-radius: 3px; color: transparent; }
 .wcv-mark[data-status="resolved"] { background: rgba(26, 156, 83, 0.20); }
 .wcv-mark[data-kind="ask"] { background: rgba(77, 107, 254, 0.20); }
+/* 修改建议：波浪下划线标记，原文与改法在面板里对照 */
+.wcv-mark[data-mark="suggestion"] { background: rgba(217, 130, 43, 0.14);
+  text-decoration: underline wavy var(--dsw-alias-state-warn-primary, #d9822b);
+  text-decoration-thickness: 1px; text-underline-offset: 3px; }
+.wcv-sugg { display: flex; flex-direction: column; gap: 5px; padding: 9px 10px; border-radius: 9px;
+  margin-bottom: 8px; border: 1px solid var(--dsw-alias-border-l1, rgba(128,128,128,0.26));
+  background: var(--dsw-alias-bg-layer-1, rgba(128,128,128,0.05)); }
+.wcv-sugg[data-status="accepted"] { opacity: 0.62; }
+.wcv-sugg[data-status="rejected"] { opacity: 0.45; }
+.wcv-diffDel { font-size: 12px; line-height: 1.6; padding: 5px 8px; border-radius: 6px;
+  background: rgba(217, 48, 37, 0.08); color: var(--dsw-alias-label-secondary, #6b6b6b);
+  text-decoration: line-through; white-space: pre-wrap; }
+.wcv-diffIns { font-size: 12px; line-height: 1.6; padding: 5px 8px; border-radius: 6px;
+  background: rgba(26, 156, 83, 0.10); white-space: pre-wrap; }
 .wcv-editor--over { position: relative; z-index: 1; background: transparent !important; }
 
 /* ---- 撰写中 ---- */
@@ -345,6 +359,7 @@ window.__ModuleLoader__.load({
       const [showConstraints, setShowConstraints] = React.useState(false);
       const [reloadToken, setReloadToken] = React.useState(0);
       const [annotations, setAnnotations] = React.useState([]);
+      const [suggestions, setSuggestions] = React.useState([]);
       const [writing, setWriting] = React.useState({ active: false, startedAt: null, note: '' });
       const [selection, setSelection] = React.useState(null);
       const [specs, setSpecs] = React.useState([]);
@@ -355,6 +370,20 @@ window.__ModuleLoader__.load({
       const [paneTab, setPaneTab] = React.useState('none');
       /** 空内容覆盖被拦下时的提示（只有用户显式确认才允许清空）。 */
       const [emptyBlocked, setEmptyBlocked] = React.useState(false);
+      /** 界面开关（目前只有开发期交互自检）。 */
+      const [uiFlags, setUiFlags] = React.useState({ interactionSelfTest: false });
+
+      React.useEffect(() => {
+        let cancelled = false;
+        apiGet('/ui-flags')
+          .then(({ ok, data }) => {
+            if (!cancelled && ok) setUiFlags({ interactionSelfTest: data?.interactionSelfTest === true });
+          })
+          .catch(() => {});
+        return () => {
+          cancelled = true;
+        };
+      }, []);
 
       // 格式规格清单来自宿主（预设的字体/字号/行距）。
       React.useEffect(() => {
@@ -427,6 +456,8 @@ window.__ModuleLoader__.load({
             applyServer(data);
             setText(data.latest?.content ?? '');
             setAnnotations(Array.isArray(data.annotations) ? data.annotations : []);
+          setSuggestions(Array.isArray(data.suggestions) ? data.suggestions : []);
+            setSuggestions(Array.isArray(data.suggestions) ? data.suggestions : []);
             setWriting(data.writing ?? { active: false, startedAt: null, note: '' });
             dirtyRef.current = false;
             setStatus('ready');
@@ -518,9 +549,34 @@ window.__ModuleLoader__.load({
             writingPill: one('.wcv-writing') !== null,
             bannerText: one('.wcv-banner') === null ? null : one('.wcv-banner').textContent.slice(0, 80),
           });
+
+          // 开发期交互自检：程序化地选中一段文字，确认浮动工具条真的出现。
+          // 不依赖鼠标模拟，因此不受辅助功能权限影响；只在开关打开时运行，
+          // 且不抢用户焦点、结束后恢复原选区。
+          if (uiFlags.interactionSelfTest !== true) return;
+          const editorNode = editorRef.current;
+          if (editorNode === null || document.activeElement === editorNode || editorNode.value.length === 0) {
+            return;
+          }
+          const previous = [editorNode.selectionStart, editorNode.selectionEnd];
+          editorNode.setSelectionRange(0, Math.min(6, editorNode.value.length));
+          syncSelection();
+          setTimeout(() => {
+            const float = rootRef.current === null ? null : rootRef.current.querySelector('.wcv-float');
+            report('selfcheck:interaction', {
+              selectionMade: editorNode.selectionEnd > editorNode.selectionStart,
+              selectedChars: editorNode.selectionEnd - editorNode.selectionStart,
+              floatingToolbar: float !== null,
+              floatButtons: float === null ? 0 : float.querySelectorAll('.wcv-floatBtn').length,
+              floatAiButtons: float === null ? 0 : float.querySelectorAll('.wcv-floatBtn--ai').length,
+              floatOffsetTop: float === null ? null : float.style.top,
+            });
+            editorNode.setSelectionRange(previous[0], previous[1]);
+            setSelection(null);
+          }, 300);
         }, 1500);
         return () => clearTimeout(timer);
-      }, [variant, reloadToken]);
+      }, [variant, reloadToken, uiFlags]);
 
       /**
        * 订阅宿主的事件流。
@@ -545,6 +601,7 @@ window.__ModuleLoader__.load({
           if (disposed || !ok) return;
           applyServer(data);
           setAnnotations(Array.isArray(data.annotations) ? data.annotations : []);
+          setSuggestions(Array.isArray(data.suggestions) ? data.suggestions : []);
           setWriting(data.writing ?? { active: false, startedAt: null, note: '' });
           if (dirtyRef.current) {
             setMessage('AI 刚写入了新版本，但你本地还有未保存的改动，所以没有自动替换。');
@@ -595,7 +652,10 @@ window.__ModuleLoader__.load({
               });
             } else if (payload?.type === 'annotations-changed') {
               void apiGet('/annotations', targetQuery(target)).then(({ ok, data }) => {
-                if (!disposed && ok) setAnnotations(data.annotations ?? []);
+                if (!disposed && ok) {
+                  setAnnotations(data.annotations ?? []);
+                  if (Array.isArray(data.suggestions)) setSuggestions(data.suggestions);
+                }
               });
             }
           };
@@ -696,6 +756,28 @@ window.__ModuleLoader__.load({
         } catch (error) {
           setStatus('error');
           setMessage(`更新批注失败：${String(error)}`);
+        }
+      };
+
+      /** 决定一条修改建议：接受才会真正写入正文（新版本），拒绝只改状态。 */
+      const decideSuggestion = async (id, action) => {
+        try {
+          const { ok, data } = await apiPost('/suggestions/decide', { ...targetBody(target), id, action });
+          if (!ok) {
+            throw new Error(data?.message ?? data?.error ?? '操作失败');
+          }
+          setSuggestions(data.suggestions ?? []);
+          if (data.applied === true && data.latest !== undefined) {
+            applyServer({ ...data, exists: true, docId: target.docId, workspace: doc?.workspace });
+            revealContent(data.latest.content);
+            setMessage(`已接受建议并写入 v${data.latest.n}。${data.message ?? ''}`);
+          } else if (action === 'reject') {
+            setMessage('已拒绝这条建议，正文未改动。');
+          }
+          report('suggestion:decide', { id, action, applied: data.applied === true });
+        } catch (error) {
+          setStatus('error');
+          setMessage(`处理建议失败：${String(error)}`);
         }
       };
 
@@ -896,9 +978,50 @@ window.__ModuleLoader__.load({
       const currentTypeId = doc?.meta?.writingType ?? '';
       const currentType = types.find((type) => type.id === currentTypeId);
       const openCount = annotations.filter((a) => a.status === 'open').length;
+      const pendingSuggestions = suggestions.filter((s) => s.status === 'pending').length;
       /** 当前选用的 DOCX 格式规格：用户显式选择的优先，其次取写作类型的默认规格。 */
       const currentSpecId =
         exportSpec !== '' ? exportSpec : (doc?.meta?.format?.spec ?? specs[0]?.id ?? '');
+
+      /** 修改建议列表内容：原文与建议对照，逐条接受或拒绝。 */
+      const renderSuggestionsBody = () =>
+        suggestions.length === 0
+          ? h(
+              'div',
+              { className: 'wcv-empty' },
+              '还没有修改建议。当 AI 想改写你已有的文字时，它会以「建议」的形式出现在这里——原文与改法对照，由你决定接受或拒绝，正文不会在你点头之前被改动。',
+            )
+          : suggestions.map((item) =>
+              h(
+                'div',
+                { key: item.id, className: 'wcv-sugg', 'data-status': item.status },
+                h(
+                  'div',
+                  { className: 'wcv-annoHead' },
+                  h('span', { className: 'wcv-annoKind' }, item.status === 'pending' ? '待决定' : item.status === 'accepted' ? '已接受' : '已拒绝'),
+                  h('span', null, item.author === 'agent' ? 'AI' : '我'),
+                  h('span', { style: { marginLeft: 'auto' } }, formatTime(item.createdAt)),
+                ),
+                item.anchorLost === true
+                  ? h('div', { className: 'wcv-annoLost' }, '原文已不在正文中，无法应用（需重新生成建议）。')
+                  : null,
+                h('div', { className: 'wcv-diffDel' }, item.original),
+                h('div', { className: 'wcv-diffIns' }, item.proposed),
+                item.reason !== '' ? h('div', { className: 'wcv-annoText' }, item.reason) : null,
+                item.status === 'pending'
+                  ? h(
+                      'div',
+                      { className: 'wcv-annoActions' },
+                      h(
+                        'button',
+                        { className: 'wcv-mini', disabled: item.anchorLost === true, onClick: () => void decideSuggestion(item.id, 'accept') },
+                        '接受并写入',
+                      ),
+                      h('button', { className: 'wcv-mini', onClick: () => void decideSuggestion(item.id, 'reject') }, '拒绝'),
+                    )
+                  : null,
+              ),
+            );
 
       /** 批注列表内容（整页模式放右栏，窄栏模式放进底部抽屉）。 */
       const renderAnnotationsBody = () =>
@@ -1250,19 +1373,20 @@ window.__ModuleLoader__.load({
                   h(
                     'div',
                     { className: 'wcv-highlightInner' },
-                    ...buildHighlightSegments(text, annotations).map((segment, index) =>
-                      segment.mark === true
-                        ? h(
+                    ...buildHighlightSegments(text, annotations, suggestions).map((segment, index) =>
+                      segment.mark === false
+                        ? h('span', { key: index }, segment.text)
+                        : h(
                             'mark',
                             {
                               key: index,
                               className: 'wcv-mark',
+                              'data-mark': segment.mark,
                               'data-status': segment.status,
                               'data-kind': segment.kind,
                             },
                             segment.text,
-                          )
-                        : h('span', { key: index }, segment.text),
+                          ),
                     ),
                   ),
                 ),
@@ -1351,6 +1475,14 @@ window.__ModuleLoader__.load({
             ),
           ),
 
+          // 建议面板（整页模式放右栏最前；窄栏模式隐藏，内容改由底部抽屉呈现）
+          h(
+            'div',
+            { className: variant === 'workbench' ? 'wcv-col' : 'wcv-col wcv-hidden' },
+            h('div', { className: 'wcv-colHead' }, `修改建议（${pendingSuggestions} 待决定 / ${suggestions.length}）`),
+            h('div', { className: 'wcv-colBody' }, renderSuggestionsBody()),
+          ),
+
           // 批注面板（整页模式放右栏；窄栏模式隐藏，内容改由底部抽屉呈现）
           h(
             'div',
@@ -1379,6 +1511,15 @@ window.__ModuleLoader__.load({
                   'button',
                   {
                     className: 'wcv-drawerTab',
+                    'data-active': paneTab === 'suggestions' ? 'true' : 'false',
+                    onClick: () => setPaneTab((current) => (current === 'suggestions' ? 'none' : 'suggestions')),
+                  },
+                  `建议 ${pendingSuggestions}${suggestions.length > pendingSuggestions ? `/${suggestions.length}` : ''}`,
+                ),
+                h(
+                  'button',
+                  {
+                    className: 'wcv-drawerTab',
                     'data-active': paneTab === 'annotations' ? 'true' : 'false',
                     onClick: () => setPaneTab((current) => (current === 'annotations' ? 'none' : 'annotations')),
                   },
@@ -1401,7 +1542,11 @@ window.__ModuleLoader__.load({
                 : h(
                     'div',
                     { className: 'wcv-drawerBody' },
-                    paneTab === 'annotations' ? renderAnnotationsBody() : renderVersionsBody(),
+                    paneTab === 'suggestions'
+                      ? renderSuggestionsBody()
+                      : paneTab === 'annotations'
+                        ? renderAnnotationsBody()
+                        : renderVersionsBody(),
                   ),
             )
           : null,
@@ -1961,31 +2106,41 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * 在被批注的区间两侧插入高亮标记，用于「批注高亮层」。
+     * 把正文切成 普通文本 / 已标记 交替的片段，用于「批注高亮层」。
+     *
+     * 关于建议：高亮层必须与 textarea 的文本**严格逐字对齐**，否则整层会错位。
+     * 因此这里**不把建议的 proposed 插进来**，只把原文区间标成波浪线；
+     * 「改成什么」放在旁边的建议面板里对照显示。
+     *
      * @param content - 正文。
-     * @param annotations - 批注数组（含 range）。
-     * @returns [{ text, status, kind }] 片段数组。
+     * @param annotations - 批注数组。
+     * @param suggestions - 建议数组（可选）。
+     * @returns [{ text, mark?, status?, kind? }]
      */
-    function buildHighlightSegments(content, annotations) {
-      const ranges = annotations
-        .filter((item) => item.anchorLost !== true && Number.isInteger(item.range?.start))
-        .map((item) => ({
-          start: Math.max(0, Math.min(item.range.start, content.length)),
-          end: Math.max(0, Math.min(item.range.end, content.length)),
-          status: item.status,
-          kind: item.kind,
-        }))
-        .filter((item) => item.end > item.start)
-        .sort((a, b) => a.start - b.start);
+    function buildHighlightSegments(content, annotations, suggestions) {
+      const ranges = [];
+      for (const item of suggestions ?? []) {
+        if (item.status !== 'pending' || item.anchorLost === true) continue;
+        const start = Math.max(0, Math.min(item.range?.start ?? 0, content.length));
+        const end = Math.max(0, Math.min(item.range?.end ?? 0, content.length));
+        if (end > start) ranges.push({ start, end, mark: 'suggestion', status: 'pending', kind: 'suggestion' });
+      }
+      for (const item of annotations) {
+        if (item.anchorLost === true) continue;
+        const start = Math.max(0, Math.min(item.range?.start ?? 0, content.length));
+        const end = Math.max(0, Math.min(item.range?.end ?? 0, content.length));
+        if (end > start) ranges.push({ start, end, mark: 'note', status: item.status, kind: item.kind });
+      }
+      ranges.sort((a, b) => a.start - b.start || a.end - b.end);
 
       const segments = [];
       let cursor = 0;
       for (const range of ranges) {
-        if (range.start < cursor) continue; // 重叠的批注只画第一段，避免标记错乱
+        if (range.start < cursor) continue; // 重叠区间只画第一个，避免标记错乱
         if (range.start > cursor) segments.push({ text: content.slice(cursor, range.start), mark: false });
         segments.push({
           text: content.slice(range.start, range.end),
-          mark: true,
+          mark: range.mark,
           status: range.status,
           kind: range.kind,
         });
@@ -2319,4 +2474,5 @@ window.__ModuleLoader__.load({
     return exports;
   },
 });
+
 
