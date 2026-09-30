@@ -1,0 +1,39 @@
+{
+  "name": "dsh-writing-canvas",
+  "version": "0.1.0",
+  "description": "DeepSeek Harness 写作插件：全新写作工作台界面、可插拔写作类型、强指令约束提示词、Markdown/DOCX 双轨格式、Canvas 编辑批注与不可变历史",
+  "type": "module",
+  "license": "MIT",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./client": "./client/client.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src",
+    "client",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=22",
+    "dsh": "0.2.0-rc.2"
+  },
+  "dsh": {
+    "manifestVersion": 1,
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web"
+    }
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "writing"
+  ]
+}

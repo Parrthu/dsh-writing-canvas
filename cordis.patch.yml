@@ -1,0 +1,19 @@
+# dsh-writing-canvas 组合包补丁层
+#
+# 把写作工作台挂载进 profile 的主机组合：
+#   - 向全局系统提示注入「强指令约束」段
+#   - 通过 webServer 暴露 /writing-canvas/api/* 路由，供写作工作台界面读写状态
+#
+# 客户端半体由 package.json 的 dsh.client 声明，宿主会在 /plugins/dsh-writing-canvas/*
+# 提供该 bundle；界面入口注册在 sidebar.panellist，整页注册在 main 键 writing-canvas。
+#
+# 注意：在用户 profile 的 cordis.patch.yml 中用 id 定向覆盖下面这行时，
+# 会替换整个 config 对象，因此必须把所有字段一并写全。
+- insert:
+    - id: writing-canvas
+      name: dsh-writing-canvas
+      config:
+        # 写作运行时状态目录（相对会话工作区）
+        stateDir: .writing-canvas
+        # 强指令约束提示段在系统提示中的顺序
+        promptSectionOrder: 118
