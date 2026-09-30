@@ -154,6 +154,36 @@ export class DocumentStore {
   }
 
   /**
+   * 设定文档的写作类型（只改元信息，不产生新的正文版本）。
+   * @param docId - 文档标识。
+   * @param typeId - 写作类型 id。
+   * @returns 更新后的 meta。
+   */
+  async setType(docId, typeId) {
+    assertSafeDocId(docId);
+    return this.#enqueue(docId, async () => {
+      const dir = this.docDir(docId);
+      await mkdir(dir, { recursive: true });
+      const metaPath = join(dir, 'meta.json');
+      const existing = existsSync(metaPath) ? JSON.parse(await readFile(metaPath, 'utf8')) : null;
+      const at = new Date().toISOString();
+      const meta = {
+        docId,
+        title: existing?.title ?? '未命名文档',
+        format: existing?.format ?? { kind: 'markdown' },
+        createdAt: existing?.createdAt ?? at,
+        updatedAt: at,
+        latest: existing?.latest ?? 0,
+        latestHash: existing?.latestHash ?? null,
+        versionCount: existing?.versionCount ?? 0,
+        writingType: typeId,
+      };
+      await writeJsonAtomic(metaPath, meta);
+      return meta;
+    });
+  }
+
+  /**
    * 列出全部版本，按版本号升序（不含正文，供历史列表使用）。
    * @param docId - 文档标识。
    * @returns 版本摘要数组。

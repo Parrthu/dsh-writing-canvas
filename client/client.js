@@ -112,6 +112,19 @@ window.__ModuleLoader__.load({
 .wcv-foot { flex: none; display: flex; gap: 10px; align-items: center; padding: 6px 14px;
   border-top: 1px solid var(--dsw-alias-border-l1, rgba(128,128,128,0.28));
   font-size: 11.5px; color: var(--dsw-alias-label-secondary, #6b6b6b); }
+.wcv-typeBar { flex: none; display: flex; align-items: center; gap: 8px; padding: 7px 14px;
+  border-bottom: 1px solid var(--dsw-alias-border-l1, rgba(128,128,128,0.28)); flex-wrap: wrap; }
+.wcv-root--pane .wcv-typeBar { padding: 6px 10px; }
+.wcv-typeLabel { font-size: 12px; color: var(--dsw-alias-label-secondary, #6b6b6b); }
+.wcv-select { font: inherit; font-size: 12.5px; padding: 3px 8px; border-radius: 6px; cursor: pointer;
+  border: 1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.4));
+  background: var(--dsw-alias-bg-layer-1, rgba(128,128,128,0.06)); color: inherit; }
+.wcv-select:focus { outline: none; border-color: var(--dsw-alias-brand-primary, #4d6bfe); }
+.wcv-formatTag { font-size: 11.5px; padding: 2px 8px; border-radius: 999px;
+  border: 1px solid var(--dsw-alias-border-l1, rgba(128,128,128,0.28));
+  color: var(--dsw-alias-label-secondary, #6b6b6b); }
+.wcv-constraintList { margin: 6px 0 0; padding-left: 20px; font-size: 12px; line-height: 1.75; }
+.wcv-constraintList li { margin-bottom: 3px; }
 `;
 
     /** 注入样式（模块体副作用，仅在 bundle 首次 materialize 时执行一次）。 */
@@ -225,6 +238,22 @@ window.__ModuleLoader__.load({
       const [message, setMessage] = React.useState(null);
       const [conflict, setConflict] = React.useState(null);
       const [viewing, setViewing] = React.useState(null);
+      const [types, setTypes] = React.useState([]);
+      const [showConstraints, setShowConstraints] = React.useState(false);
+      const [reloadToken, setReloadToken] = React.useState(0);
+
+      // 写作类型清单来自宿主（每个类型都是独立的插件行，可单独启用/停用）。
+      React.useEffect(() => {
+        let cancelled = false;
+        apiGet('/types')
+          .then(({ ok, data }) => {
+            if (!cancelled && ok && Array.isArray(data?.types)) setTypes(data.types);
+          })
+          .catch(() => {});
+        return () => {
+          cancelled = true;
+        };
+      }, [reloadToken]);
 
       // 自动保存需要读到最新的输入，用 ref 避免把 effect 绑到 text 上反复重跑。
       const textRef = React.useRef('');
@@ -280,7 +309,34 @@ window.__ModuleLoader__.load({
         return () => {
           cancelled = true;
         };
-      }, [targetKey, applyServer]);
+      }, [targetKey, applyServer, reloadToken]);
+
+      /** 选定写作类型（写入文档元信息，不产生正文版本）。 */
+      const chooseType = async (typeId) => {
+        setStatus('saving');
+        try {
+          const { ok, data } = await apiPost('/doc/type', { ...targetBody(target), typeId });
+          if (!ok || data?.ok !== true) {
+            throw new Error(data?.message ?? data?.error ?? '设定失败');
+          }
+          const label = data.writingType === null ? null : data.label;
+          const mustConfirm = Array.isArray(data.mustConfirm) ? data.mustConfirm : [];
+          setMessage(
+            label === null
+              ? '已清空写作类型。'
+              : `已设为「${label}」。${
+                  mustConfirm.length > 0 ? `生成正文前需确认：${mustConfirm.join('、')}。` : ''
+                }`,
+          );
+          setShowConstraints(false);
+          setReloadToken((n) => n + 1);
+          setStatus('ready');
+          report('type:set', { typeId, label });
+        } catch (error) {
+          setStatus('error');
+          setMessage(`设定写作类型失败：${String(error)}`);
+        }
+      };
 
       // ---- 保存 ----------------------------------------------------------
       const save = React.useCallback(
@@ -381,6 +437,8 @@ window.__ModuleLoader__.load({
 
       const versions = doc?.versions ?? [];
       const title = doc?.meta?.title ?? (doc?.exists === false ? '未命名文档' : '写作画布');
+      const currentTypeId = doc?.meta?.writingType ?? '';
+      const currentType = types.find((type) => type.id === currentTypeId);
 
       return h(
         'div',
@@ -436,6 +494,57 @@ window.__ModuleLoader__.load({
 
         message !== null
           ? h('div', { className: `wcv-banner${status === 'error' ? ' wcv-banner--error' : ''}` }, message)
+          : null,
+
+        // 写作类型选择条：用户可以直接指定文种，Agent 也能通过工具读到这里的选择。
+        h(
+          'div',
+          { className: 'wcv-typeBar' },
+          h('span', { className: 'wcv-typeLabel' }, '写作类型'),
+          h(
+            'select',
+            {
+              className: 'wcv-select',
+              value: currentTypeId,
+              onChange: (event) => void chooseType(event.target.value),
+            },
+            h('option', { value: '' }, '未指定'),
+            ...types.map((type) => h('option', { key: type.id, value: type.id }, type.label)),
+          ),
+          currentType !== undefined
+            ? h(
+                'span',
+                { className: 'wcv-formatTag' },
+                currentType.format?.kind === 'docx'
+                  ? `DOCX · ${currentType.format.spec ?? '未命名规格'}`
+                  : 'Markdown',
+              )
+            : null,
+          currentType !== undefined && (currentType.constraints?.length ?? 0) > 0
+            ? h(
+                'button',
+                { className: 'wcv-btn', onClick: () => setShowConstraints((v) => !v) },
+                showConstraints ? '收起硬约束' : `查看硬约束（${currentType.constraints.length}）`,
+              )
+            : null,
+          types.length === 0
+            ? h('span', { className: 'wcv-formatTag' }, '尚未启用任何写作类型插件')
+            : null,
+        ),
+
+        showConstraints && currentType !== undefined
+          ? h(
+              'div',
+              { className: 'wcv-banner' },
+              (currentType.mustConfirm?.length ?? 0) > 0
+                ? h('div', null, `生成前必须确认：${currentType.mustConfirm.join('、')}`)
+                : null,
+              h(
+                'ol',
+                { className: 'wcv-constraintList' },
+                ...(currentType.constraints ?? []).map((item, index) => h('li', { key: index }, item)),
+              ),
+            )
           : null,
 
         h(

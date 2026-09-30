@@ -2,13 +2,78 @@
  * 强指令约束提示段。
  *
  * 这一段的定位不是"建议"，而是**不可协商的硬约束**：它约束 Agent 在写作任务中的
- * 行为边界。写作类型的专属约束由各写作类型插件追加，本段只放跨类型的通用硬规则。
+ * 行为边界。写作类型的专属约束由各写作类型插件提供，本文件负责把它们汇总成
+ * 另一段提示（typesSectionText），使约束对模型始终可见。
  *
  * @module dsh-writing-canvas/prompt
  */
 
+import { listTypes } from './types/registry.js';
+
 /** 强指令约束段的段名（在系统提示注册表中的唯一标识）。 */
 export const CONSTRAINTS_SECTION_NAME = 'writing-canvas:constraints';
+
+/** 写作类型段的段名。 */
+export const TYPES_SECTION_NAME = 'writing-canvas:types';
+
+/**
+ * 渲染写作类型段：列出当前启用的类型，并把每个类型的**全部硬约束**直接写进提示。
+ *
+ * 为什么不做成"按需查询"：硬约束如果只存在于工具返回值里，模型就有可能在没查的
+ * 情况下动笔。放进提示里，约束才是真的绕不过去。
+ *
+ * @returns 写作类型段正文。
+ */
+export function typesSectionText() {
+  const types = listTypes();
+  if (types.length === 0) {
+    return [
+      '# 写作类型',
+      '',
+      '当前没有启用任何写作类型插件。开始写正文前必须先向用户确认写作类型与要求，',
+      '并提示用户可以启用相应的写作类型插件。',
+    ].join('\n');
+  }
+
+  const lines = [
+    '# 写作类型与专属硬约束',
+    '',
+    '当前启用以下写作类型。写任何正文之前，必须先确定使用哪一种，并把该类型的',
+    '「生成前必须确认」要素与用户确认完毕。下列约束与该类型同属硬约束。',
+    '',
+  ];
+
+  for (const type of types) {
+    const format = type.format ?? { kind: 'markdown' };
+    lines.push(`## ${type.label}（id: \`${type.id}\`）`);
+    if (typeof type.summary === 'string' && type.summary !== '') lines.push(type.summary);
+    lines.push(
+      '',
+      `默认格式：${
+        format.kind === 'docx'
+          ? `DOCX（规格 ${format.spec ?? '未命名'}）—— 字体、字号、行距必须由格式工具真实写入并回读校验`
+          : 'Markdown'
+      }`,
+    );
+    if (Array.isArray(type.mustConfirm) && type.mustConfirm.length > 0) {
+      lines.push('', `生成前必须确认：${type.mustConfirm.join('、')}`);
+    }
+    if (Array.isArray(type.constraints) && type.constraints.length > 0) {
+      lines.push('', '硬约束：');
+      for (const [index, item] of type.constraints.entries()) lines.push(`${index + 1}. ${item}`);
+    }
+    lines.push('', '完整结构骨架与交付前自检清单用 `writing_type_list` 读取。', '');
+  }
+
+  lines.push(
+    '---',
+    '',
+    '选定类型后用 `writing_type_set` 记到文档上，再按对应约束动笔。',
+    '正文一律通过 `writing_canvas_write` 写入写作画布，不要只写在对话里。',
+  );
+
+  return lines.join('\n');
+}
 
 /**
  * 渲染强指令约束段的正文。

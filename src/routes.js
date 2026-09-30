@@ -17,6 +17,7 @@
  */
 
 import { DocumentStore } from './store.js';
+import { listTypes } from './types/registry.js';
 
 /** API 前缀。 */
 export const API_PREFIX = '/writing-canvas/api';
@@ -87,10 +88,11 @@ export function docIdOfSession(sessionId) {
  * @param options.config - 已解析配置。
  * @param options.resolveWorkspacePath - 由 sessionId 解析工作区绝对路径。
  * @param options.listWorkspaces - 返回 [{ id, path, title }]，用于校验与总览。
+ * @param options.storeFor - 共享的存储工厂；省略时自建（会与工具层分离，仅供测试）。
  * @param options.logger - 可选日志器。
  * @returns node:http 风格的 (req, res) 处理器。
  */
-export function createApiHandler({ config, resolveWorkspacePath, listWorkspaces, logger }) {
+export function createApiHandler({ config, resolveWorkspacePath, listWorkspaces, storeFor: sharedStoreFor, logger }) {
   /** 同一工作区复用同一个 DocumentStore 实例（写入链才有意义）。 */
   const stores = new Map();
 
@@ -103,14 +105,16 @@ export function createApiHandler({ config, resolveWorkspacePath, listWorkspaces,
    */
   const clientReports = [];
 
-  const storeFor = (workspacePath) => {
-    let store = stores.get(workspacePath);
-    if (store === undefined) {
-      store = new DocumentStore(workspacePath, config.stateDir);
-      stores.set(workspacePath, store);
-    }
-    return store;
-  };
+  const storeFor =
+    sharedStoreFor ??
+    ((workspacePath) => {
+      let store = stores.get(workspacePath);
+      if (store === undefined) {
+        store = new DocumentStore(workspacePath, config.stateDir);
+        stores.set(workspacePath, store);
+      }
+      return store;
+    });
 
   /**
    * 解析本次请求的目标 { workspacePath, docId }。
@@ -147,6 +151,59 @@ export function createApiHandler({ config, resolveWorkspacePath, listWorkspaces,
           release: '0.2.0-rc.2',
           stateDir: config.stateDir,
           constraintsSection: 'writing-canvas:constraints',
+        });
+        return;
+      }
+
+      // ---- 写作类型清单（界面左栏用）--------------------------------------
+      if (route === '/types' && method === 'GET') {
+        sendJson(res, 200, {
+          ok: true,
+          types: listTypes().map((type) => ({
+            id: type.id,
+            label: type.label,
+            order: type.order ?? 100,
+            summary: type.summary ?? '',
+            format: type.format ?? { kind: 'markdown' },
+            mustConfirm: type.mustConfirm ?? [],
+            constraints: type.constraints ?? [],
+            structure: type.structure ?? [],
+            checklist: type.checklist ?? [],
+          })),
+        });
+        return;
+      }
+
+      // ---- 设定写作类型（界面里用户直接选）--------------------------------
+      if (route === '/doc/type' && method === 'POST') {
+        const body = await readJsonBody(req, 64 * 1024);
+        const target = await resolveTarget(body);
+        if (target.error !== undefined) {
+          sendJson(res, 400, { error: target.error });
+          return;
+        }
+        const wanted = typeof body.typeId === 'string' ? body.typeId : '';
+        const known = listTypes();
+        if (wanted === '') {
+          // 空字符串表示清空类型选择。
+          const store = storeFor(target.workspacePath);
+          await store.setType(target.docId, undefined);
+          sendJson(res, 200, { ok: true, writingType: null });
+          return;
+        }
+        const type = known.find((item) => item.id === wanted);
+        if (type === undefined) {
+          sendJson(res, 400, { error: 'unknown-writing-type', typeId: wanted, available: known.map((t) => t.id) });
+          return;
+        }
+        const store = storeFor(target.workspacePath);
+        const meta = await store.setType(target.docId, type.id);
+        sendJson(res, 200, {
+          ok: true,
+          writingType: type.id,
+          label: type.label,
+          format: meta.format,
+          mustConfirm: type.mustConfirm ?? [],
         });
         return;
       }

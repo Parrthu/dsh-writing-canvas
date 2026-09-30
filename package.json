@@ -9,7 +9,12 @@
     ".": "./src/index.js",
     "./client": "./client/client.js",
     "./cordis.patch.yml": "./cordis.patch.yml",
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./type/creative": "./src/types/creative.js",
+    "./type/gongwen": "./src/types/gongwen.js",
+    "./type/video-script": "./src/types/video-script.js",
+    "./type/xiaohongshu": "./src/types/xiaohongshu.js",
+    "./type/news": "./src/types/news.js"
   },
   "files": [
     "src",
@@ -18,7 +23,7 @@
     "README.md"
   ],
   "scripts": {
-    "test": "node --test test/store.test.mjs test/routes.test.mjs",
+    "test": "node --test test/store.test.mjs test/routes.test.mjs test/types.test.mjs",
     "check": "node --check src/index.js && node --check client/client.js"
   },
   "engines": {

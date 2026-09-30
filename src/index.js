@@ -12,8 +12,11 @@
  * @module dsh-writing-canvas
  */
 
-import { CONSTRAINTS_SECTION_NAME, constraintsText } from './prompt.js';
+import { CONSTRAINTS_SECTION_NAME, TYPES_SECTION_NAME, constraintsText, typesSectionText } from './prompt.js';
 import { API_PREFIX, createApiHandler } from './routes.js';
+import { createStoreRegistry } from './stores.js';
+import { registerWritingTools } from './tools.js';
+import { onTypesChanged, writingCanvasTypes } from './types/registry.js';
 import { createWorkspaceLister, createWorkspaceResolver } from './workspace.js';
 
 /** 插件在 Cordis 组合中的条目名。 */
@@ -53,6 +56,22 @@ export function apply(ctx, rawConfig) {
   const config = resolveConfig(rawConfig);
   const resolveWorkspacePath = createWorkspaceResolver(ctx);
   const listWorkspaces = createWorkspaceLister(ctx);
+  /** 界面与工具共用同一批存储实例，写入串行链才不会各管各的。 */
+  const storeFor = createStoreRegistry(config);
+
+  // 0) 把写作类型注册表挂到 ctx，供**本包之外**的第三方插件注册新类型。
+  //    内置类型包走同包模块直接注册，不依赖这一步，所以失败也不影响功能。
+  try {
+    const reflect = ctx.reflect;
+    if (reflect !== undefined && typeof reflect.provide === 'function') {
+      const dispose = reflect.provide('writingCanvasTypes', writingCanvasTypes);
+      if (typeof dispose === 'function') {
+        ctx.effect(() => dispose, 'writing-canvas: 写作类型服务');
+      }
+    }
+  } catch (error) {
+    ctx.logger.warn(`writing-canvas: 未能暴露 writingCanvasTypes 服务（不影响内置类型）：${String(error)}`);
+  }
 
   // 1) 强指令约束提示段：跨写作类型的通用硬约束。
   ctx.inject(['systemPrompt'], (scoped) => {
@@ -65,6 +84,27 @@ export function apply(ctx, rawConfig) {
         }),
       'writing-canvas: 强指令约束提示段',
     );
+
+    // 1b) 写作类型与专属硬约束。
+    //     写作类型是独立的插件行，注册时机晚于本插件，所以这里订阅注册表变化，
+    //     每次变化都重新注册该提示段，保证提示内容始终与已启用的类型一致。
+    scoped.effect(() => {
+      let disposeSection = null;
+      const install = () => {
+        if (disposeSection !== null) disposeSection();
+        disposeSection = scoped.systemPrompt.section({
+          name: TYPES_SECTION_NAME,
+          order: config.promptSectionOrder + 1,
+          text: typesSectionText(),
+        });
+      };
+      install();
+      const unsubscribe = onTypesChanged(install);
+      return () => {
+        unsubscribe();
+        if (disposeSection !== null) disposeSection();
+      };
+    }, 'writing-canvas: 写作类型提示段');
   });
 
   // 2) 宿主 API：文档读写、不可变版本、还原。
@@ -78,11 +118,17 @@ export function apply(ctx, rawConfig) {
             config,
             resolveWorkspacePath,
             listWorkspaces,
+            storeFor,
             logger: ctx.logger,
           }),
         }),
       'writing-canvas: 宿主 API 路由',
     );
+  });
+
+  // 3) Agent 工具：让模型真正能读写画布、读取写作类型约束。
+  ctx.inject(['tools'], (scoped) => {
+    registerWritingTools({ ctx: scoped, resolveWorkspacePath, storeFor });
   });
 
   ctx.logger.info(
