@@ -139,6 +139,81 @@ window.__ModuleLoader__.load({
 .wcv-settingsLabel { font-size: 13.5px; font-weight: 600; min-width: 96px; }
 .wcv-keycaps { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px;
   letter-spacing: 0.5px; color: var(--dsw-alias-label-primary, #1a1a1a); min-width: 120px; }
+
+/* ---- 格式工具栏 ---- */
+.wcv-toolbar { flex: none; display: flex; align-items: center; gap: 4px; flex-wrap: wrap;
+  padding: 6px 14px; border-bottom: 1px solid var(--dsw-alias-border-l1, rgba(128,128,128,0.28)); }
+.wcv-root--pane .wcv-toolbar { padding: 5px 10px; gap: 3px; }
+.wcv-tool { font: inherit; font-size: 12.5px; line-height: 1; min-width: 26px; height: 26px;
+  padding: 0 6px; border-radius: 6px; cursor: pointer; border: 1px solid transparent;
+  background: transparent; color: var(--dsw-alias-label-secondary, #6b6b6b); }
+.wcv-tool:hover { background: var(--dsw-alias-bg-layer-2, rgba(128,128,128,0.12));
+  color: var(--dsw-alias-label-primary, #1a1a1a); }
+.wcv-tool[data-active="true"] { background: var(--dsw-alias-bg-layer-2, rgba(128,128,128,0.16));
+  color: var(--dsw-alias-label-primary, #1a1a1a); border-color: var(--dsw-alias-border-l2, rgba(128,128,128,0.4)); }
+.wcv-tool--strong { font-weight: 700; }
+.wcv-tool--italic { font-style: italic; }
+.wcv-toolSep { width: 1px; height: 16px; margin: 0 3px;
+  background: var(--dsw-alias-border-l1, rgba(128,128,128,0.3)); }
+
+/* ---- 选区浮动工具条 ---- */
+.wcv-float { position: absolute; z-index: 40; display: flex; align-items: center; gap: 2px;
+  padding: 4px 5px; border-radius: 9px; box-shadow: 0 6px 22px rgba(0,0,0,0.16);
+  background: var(--dsw-alias-bg-overlay, #fff); color: var(--dsw-alias-label-primary, #1a1a1a);
+  border: 1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.35)); }
+.wcv-floatBtn { font: inherit; font-size: 12.5px; line-height: 1; height: 26px; padding: 0 8px;
+  border-radius: 6px; cursor: pointer; border: none; background: transparent; color: inherit;
+  white-space: nowrap; }
+.wcv-floatBtn:hover { background: var(--dsw-alias-bg-layer-2, rgba(128,128,128,0.14)); }
+.wcv-floatBtn--ai { color: var(--dsw-alias-brand-primary, #4d6bfe); font-weight: 600; }
+
+/* ---- 正文 + 批注高亮层 ---- */
+.wcv-editorWrap { position: relative; flex: 1; min-height: 0; display: flex; }
+.wcv-highlight { position: absolute; inset: 0; overflow: hidden; pointer-events: none;
+  border: 1px solid transparent; border-radius: 10px; }
+.wcv-highlightInner { white-space: pre-wrap; word-break: break-word; font-size: 15px; line-height: 1.85;
+  padding: 16px 18px; color: transparent; }
+.wcv-root--pane .wcv-highlightInner { font-size: 14px; padding: 12px 14px; }
+.wcv-mark { background: rgba(255, 176, 32, 0.28); border-radius: 3px; color: transparent; }
+.wcv-mark[data-status="resolved"] { background: rgba(26, 156, 83, 0.20); }
+.wcv-mark[data-kind="ask"] { background: rgba(77, 107, 254, 0.20); }
+.wcv-editor--over { position: relative; z-index: 1; background: transparent !important; }
+
+/* ---- 撰写中 ---- */
+.wcv-writing { display: inline-flex; align-items: center; gap: 7px; padding: 4px 11px;
+  border-radius: 999px; font-size: 12px; font-weight: 600;
+  background: var(--dsw-alias-bg-layer-2, rgba(128,128,128,0.14));
+  border: 1px solid var(--dsw-alias-border-l1, rgba(128,128,128,0.3)); }
+.wcv-writingDot { width: 6px; height: 6px; border-radius: 50%; background: var(--dsw-alias-brand-primary, #4d6bfe);
+  animation: wcv-pulse 1.1s ease-in-out infinite; }
+@keyframes wcv-pulse { 0%,100% { opacity: 0.25; transform: scale(0.8); } 50% { opacity: 1; transform: scale(1.15); } }
+
+/* ---- 批注面板 ---- */
+.wcv-anno { display: flex; flex-direction: column; gap: 5px; padding: 9px 10px; border-radius: 9px;
+  margin-bottom: 8px; border: 1px solid var(--dsw-alias-border-l1, rgba(128,128,128,0.26));
+  background: var(--dsw-alias-bg-layer-1, rgba(128,128,128,0.05)); }
+.wcv-anno[data-status="resolved"] { opacity: 0.62; }
+.wcv-anno[data-status="dismissed"] { opacity: 0.45; }
+.wcv-annoHead { display: flex; align-items: center; gap: 6px; font-size: 11.5px;
+  color: var(--dsw-alias-label-secondary, #6b6b6b); }
+.wcv-annoKind { padding: 1px 6px; border-radius: 999px; font-weight: 600;
+  border: 1px solid var(--dsw-alias-border-l1, rgba(128,128,128,0.3)); }
+.wcv-annoQuote { font-size: 12px; line-height: 1.6; padding-left: 8px;
+  border-left: 2px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.4));
+  color: var(--dsw-alias-label-secondary, #6b6b6b); max-height: 66px; overflow: hidden; }
+.wcv-annoText { font-size: 12.5px; line-height: 1.65; }
+.wcv-annoLost { font-size: 11.5px; color: var(--dsw-alias-state-warn-primary, #d9822b); }
+.wcv-annoThread { font-size: 12px; line-height: 1.6; padding: 6px 8px; border-radius: 6px;
+  background: var(--dsw-alias-bg-layer-2, rgba(128,128,128,0.10)); }
+.wcv-annoInput { width: 100%; box-sizing: border-box; font: inherit; font-size: 12px;
+  padding: 5px 7px; border-radius: 6px; resize: none;
+  border: 1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.35));
+  background: var(--dsw-alias-bg-base, #fff); color: inherit; }
+.wcv-annoActions { display: flex; gap: 5px; flex-wrap: wrap; }
+.wcv-mini { font: inherit; font-size: 11.5px; padding: 2px 8px; border-radius: 5px; cursor: pointer;
+  border: 1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.35));
+  background: transparent; color: inherit; }
+.wcv-mini:hover { border-color: var(--dsw-alias-brand-primary, #4d6bfe); }
 `;
 
     /** 注入样式（模块体副作用，仅在 bundle 首次 materialize 时执行一次）。 */
@@ -255,6 +330,9 @@ window.__ModuleLoader__.load({
       const [types, setTypes] = React.useState([]);
       const [showConstraints, setShowConstraints] = React.useState(false);
       const [reloadToken, setReloadToken] = React.useState(0);
+      const [annotations, setAnnotations] = React.useState([]);
+      const [writing, setWriting] = React.useState({ active: false, startedAt: null, note: '' });
+      const [selection, setSelection] = React.useState(null);
 
       // 写作类型清单来自宿主（每个类型都是独立的插件行，可单独启用/停用）。
       React.useEffect(() => {
@@ -276,6 +354,11 @@ window.__ModuleLoader__.load({
       baseVersionRef.current = baseVersion;
       const dirtyRef = React.useRef(false);
       const savingRef = React.useRef(false);
+      /** 正文输入框与批注高亮层：高亮层用同样的排版镜像正文，用来给批注上色。 */
+      const editorRef = React.useRef(null);
+      const highlightRef = React.useRef(null);
+      /** 逐字呈现用的定时器，切换目标时必须清掉。 */
+      const revealTimerRef = React.useRef(null);
 
       /** 用服务端返回的结果刷新本地状态。 */
       const applyServer = React.useCallback((data) => {
@@ -306,6 +389,8 @@ window.__ModuleLoader__.load({
             if (!ok) throw new Error(data?.message ?? data?.error ?? '读取失败');
             applyServer(data);
             setText(data.latest?.content ?? '');
+            setAnnotations(Array.isArray(data.annotations) ? data.annotations : []);
+            setWriting(data.writing ?? { active: false, startedAt: null, note: '' });
             dirtyRef.current = false;
             setStatus('ready');
             report('canvas:loaded', {
@@ -324,6 +409,186 @@ window.__ModuleLoader__.load({
           cancelled = true;
         };
       }, [targetKey, applyServer, reloadToken]);
+
+      /** 清掉正在跑的逐字呈现动画。 */
+      const stopReveal = React.useCallback(() => {
+        if (revealTimerRef.current !== null) {
+          clearInterval(revealTimerRef.current);
+          revealTimerRef.current = null;
+        }
+      }, []);
+
+      /**
+       * 把新内容呈现出来：如果是在旧内容尾巴上追加（AI 分段写作的典型形态），
+       * 就逐字揭示，做出「正在写」的观感；否则直接替换。
+       */
+      const revealContent = React.useCallback(
+        (next) => {
+          const previous = textRef.current;
+          stopReveal();
+          if (typeof next !== 'string') return;
+          if (previous !== '' && next.startsWith(previous) && next.length > previous.length) {
+            let cursor = previous.length;
+            const step = Math.max(1, Math.ceil((next.length - previous.length) / 80));
+            revealTimerRef.current = setInterval(() => {
+              cursor = Math.min(next.length, cursor + step);
+              setText(next.slice(0, cursor));
+              if (cursor >= next.length) stopReveal();
+            }, 16);
+            return;
+          }
+          setText(next);
+        },
+        [stopReveal],
+      );
+
+      React.useEffect(() => stopReveal, [stopReveal]);
+
+      /**
+       * 订阅宿主的事件流。
+       *
+       * 这是「AI 一边写、画布一边长出来」的关键：宿主每次落盘都会推 doc-changed，
+       * 我们据此拉取新版本。用户正在编辑时**不覆盖**他的内容，只提示有新版。
+       */
+      React.useEffect(() => {
+        if (typeof EventSource !== 'function') return undefined;
+        const query = targetQuery(target);
+        const source = new EventSource(`${API_BASE}/events?${query.toString()}`);
+        let disposed = false;
+
+        const refresh = async () => {
+          const { ok, data } = await apiGet('/doc', targetQuery(target));
+          if (disposed || !ok) return;
+          applyServer(data);
+          setAnnotations(Array.isArray(data.annotations) ? data.annotations : []);
+          setWriting(data.writing ?? { active: false, startedAt: null, note: '' });
+          if (dirtyRef.current) {
+            setMessage('AI 刚写入了新版本，但你本地还有未保存的改动，所以没有自动替换。');
+            return;
+          }
+          revealContent(data.latest?.content ?? '');
+        };
+
+        source.onmessage = (event) => {
+          let payload = null;
+          try {
+            payload = JSON.parse(event.data);
+          } catch {
+            return;
+          }
+          if (payload?.type === 'doc-changed') void refresh();
+          else if (payload?.type === 'writing') {
+            setWriting({
+              active: payload.active === true,
+              startedAt: payload.startedAt ?? null,
+              note: payload.note ?? '',
+            });
+          } else if (payload?.type === 'annotations-changed') {
+            void apiGet('/annotations', targetQuery(target)).then(({ ok, data }) => {
+              if (!disposed && ok) setAnnotations(data.annotations ?? []);
+            });
+          }
+        };
+        source.onerror = () => {
+          // EventSource 会自动重连，这里不额外处理，避免制造噪音。
+        };
+
+        return () => {
+          disposed = true;
+          source.close();
+          report('sse:closed', { docId: target.docId ?? null });
+        };
+      }, [targetKey, applyServer, revealContent]);
+
+      /**
+       * 对当前选区应用 Markdown 格式。
+       * @param kind - 格式种类。
+       */
+      const applyFormat = (kind) => {
+        const el = editorRef.current;
+        const start = el === null ? 0 : el.selectionStart;
+        const end = el === null ? 0 : el.selectionEnd;
+        const next = transformSelection(textRef.current, start, end, kind);
+        setText(next.value);
+        dirtyRef.current = true;
+        setStatus('dirty');
+        // 光标位置要在 React 提交之后再设，否则会被 value 覆盖掉。
+        requestAnimationFrame(() => {
+          const node = editorRef.current;
+          if (node === null) return;
+          node.focus();
+          node.setSelectionRange(next.start, next.end);
+        });
+      };
+
+      /** 选区变化时更新浮动工具条的位置与内容。 */
+      const syncSelection = () => {
+        const el = editorRef.current;
+        if (el === null) {
+          setSelection(null);
+          return;
+        }
+        const start = el.selectionStart;
+        const end = el.selectionEnd;
+        if (end <= start) {
+          setSelection(null);
+          return;
+        }
+        const point = measureCaret(highlightRef.current, start);
+        setSelection({
+          start,
+          end,
+          text: textRef.current.slice(start, end),
+          top: point?.top ?? 0,
+          left: point?.left ?? 0,
+        });
+      };
+
+      /** 新建批注（用户在浮动工具条上选了一个 AI 动作或「批注」）。 */
+      const addAnnotation = async (kind, instruction, quote, range) => {
+        try {
+          const { ok, data } = await apiPost('/annotations', {
+            ...targetBody(target),
+            kind,
+            instruction,
+            quote,
+            range,
+            author: 'user',
+            anchorVersion: baseVersionRef.current,
+          });
+          if (!ok || data?.ok !== true) throw new Error(data?.error ?? '创建失败');
+          setAnnotations(data.annotations ?? []);
+          setMessage(`已记下批注（${ANNOTATION_KIND_LABEL[kind] ?? kind}）。在对话里说一句「处理画布上的批注」，AI 就会读到它。`);
+          report('annotation:created', { kind, length: quote.length });
+        } catch (error) {
+          setStatus('error');
+          setMessage(`创建批注失败：${String(error)}`);
+        }
+      };
+
+      /** 更新批注（回复 / 标记已处理 / 忽略）。 */
+      const updateAnnotation = async (id, patch) => {
+        try {
+          const { ok, data } = await apiPost('/annotations/update', { ...targetBody(target), id, ...patch });
+          if (!ok) throw new Error(data?.error ?? '更新失败');
+          setAnnotations(data.annotations ?? []);
+        } catch (error) {
+          setStatus('error');
+          setMessage(`更新批注失败：${String(error)}`);
+        }
+      };
+
+      /** 删除批注。 */
+      const deleteAnnotation = async (id) => {
+        try {
+          const { ok, data } = await apiPost('/annotations/delete', { ...targetBody(target), id });
+          if (!ok) throw new Error(data?.error ?? '删除失败');
+          setAnnotations(data.annotations ?? []);
+        } catch (error) {
+          setStatus('error');
+          setMessage(`删除批注失败：${String(error)}`);
+        }
+      };
 
       /** 选定写作类型（写入文档元信息，不产生正文版本）。 */
       const chooseType = async (typeId) => {
@@ -570,16 +835,233 @@ window.__ModuleLoader__.load({
             'div',
             { className: 'wcv-col' },
             variant === 'workbench' ? h('div', { className: 'wcv-colHead' }, '正文') : null,
+
+            // 格式工具栏：与豆包一致，工具条压在正文上方。
+            h(
+              'div',
+              { className: 'wcv-toolbar' },
+              ...[
+                ['h1', 'H1', '一级标题'],
+                ['h2', 'H2', '二级标题'],
+                ['h3', 'H3', '三级标题'],
+                ['sep'],
+                ['bold', 'B', '加粗'],
+                ['italic', 'I', '斜体'],
+                ['strike', 'S', '删除线'],
+                ['code', '</>', '行内代码'],
+                ['codeblock', '{ }', '代码块'],
+                ['sep'],
+                ['quote', '❝', '引用'],
+                ['ul', '•', '无序列表'],
+                ['ol', '1.', '有序列表'],
+                ['sep'],
+                ['link', '🔗', '链接'],
+                ['hr', '—', '分隔线'],
+              ].map((item, index) =>
+                item[0] === 'sep'
+                  ? h('span', { key: `sep${index}`, className: 'wcv-toolSep' })
+                  : h(
+                      'button',
+                      {
+                        key: item[0],
+                        className: `wcv-tool${item[0] === 'bold' ? ' wcv-tool--strong' : ''}${
+                          item[0] === 'italic' ? ' wcv-tool--italic' : ''
+                        }`,
+                        title: item[2],
+                        onMouseDown: (event) => event.preventDefault(),
+                        onClick: () => applyFormat(item[0]),
+                      },
+                      item[1],
+                    ),
+              ),
+              writing.active
+                ? h(
+                    'span',
+                    { className: 'wcv-writing', style: { marginLeft: 'auto' } },
+                    h('span', { className: 'wcv-writingDot' }),
+                    '撰写中…',
+                  )
+                : null,
+            ),
+
             h(
               'div',
               { className: 'wcv-canvasWrap' },
-              h('textarea', {
-                className: 'wcv-editor',
-                value: text,
-                spellCheck: false,
-                placeholder: '在这里开始写，或让 Agent 把草稿写进这份文档……',
-                onChange,
-              }),
+              h(
+                'div',
+                { className: 'wcv-editorWrap' },
+                // 批注高亮层：用相同排版镜像正文，给被批注的区间上色。
+                h(
+                  'div',
+                  { className: 'wcv-highlight', ref: highlightRef, 'aria-hidden': 'true' },
+                  h(
+                    'div',
+                    { className: 'wcv-highlightInner' },
+                    ...buildHighlightSegments(text, annotations).map((segment, index) =>
+                      segment.mark === true
+                        ? h(
+                            'mark',
+                            {
+                              key: index,
+                              className: 'wcv-mark',
+                              'data-status': segment.status,
+                              'data-kind': segment.kind,
+                            },
+                            segment.text,
+                          )
+                        : h('span', { key: index }, segment.text),
+                    ),
+                  ),
+                ),
+                h('textarea', {
+                  className: 'wcv-editor wcv-editor--over',
+                  ref: editorRef,
+                  value: text,
+                  spellCheck: false,
+                  placeholder: '在这里开始写，或让 Agent 把草稿写进这份文档……',
+                  onChange,
+                  onScroll: (event) => {
+                    const layer = highlightRef.current;
+                    if (layer !== null) layer.scrollTop = event.target.scrollTop;
+                  },
+                  onSelect: syncSelection,
+                  onKeyUp: syncSelection,
+                  onMouseUp: syncSelection,
+                  onBlur: () => setSelection(null),
+                }),
+                // 选区浮动工具条：格式按钮 + AI 动作。
+                selection !== null
+                  ? h(
+                      'div',
+                      {
+                        className: 'wcv-float',
+                        style: {
+                          top: `${Math.max(2, selection.top - 42)}px`,
+                          left: `${Math.max(4, selection.left)}px`,
+                        },
+                        onMouseDown: (event) => event.preventDefault(),
+                      },
+                      ...['bold', 'italic', 'strike', 'code'].map((kind) =>
+                        h(
+                          'button',
+                          {
+                            key: kind,
+                            className: 'wcv-floatBtn',
+                            title: { bold: '加粗', italic: '斜体', strike: '删除线', code: '行内代码' }[kind],
+                            onClick: () => applyFormat(kind),
+                          },
+                          { bold: 'B', italic: 'I', strike: 'S', code: '</>' }[kind],
+                        ),
+                      ),
+                      h('span', { className: 'wcv-toolSep' }),
+                      ...['rewrite', 'expand', 'shorten', 'polish'].map((kind) =>
+                        h(
+                          'button',
+                          {
+                            key: kind,
+                            className: 'wcv-floatBtn wcv-floatBtn--ai',
+                            onClick: () => {
+                              const value = window.prompt(
+                                `对选中内容「${ANNOTATION_KIND_LABEL[kind]}」——请写下你的要求：`,
+                                '',
+                              );
+                              if (value === null) return;
+                              void addAnnotation(kind, value, selection.text, {
+                                start: selection.start,
+                                end: selection.end,
+                              });
+                              setSelection(null);
+                            },
+                          },
+                          ANNOTATION_KIND_LABEL[kind],
+                        ),
+                      ),
+                      h(
+                        'button',
+                        {
+                          className: 'wcv-floatBtn',
+                          onClick: () => {
+                            const value = window.prompt('批注内容：', '');
+                            if (value === null) return;
+                            void addAnnotation('comment', value, selection.text, {
+                              start: selection.start,
+                              end: selection.end,
+                            });
+                            setSelection(null);
+                          },
+                        },
+                        '批注',
+                      ),
+                    )
+                  : null,
+              ),
+            ),
+          ),
+
+          // 批注面板
+          h(
+            'div',
+            { className: 'wcv-col' },
+            h('div', { className: 'wcv-colHead' }, `批注（${annotations.filter((a) => a.status === 'open').length} 待处理 / ${annotations.length}）`),
+            h(
+              'div',
+              { className: 'wcv-colBody' },
+              annotations.length === 0
+                ? h('div', { className: 'wcv-empty' }, '选中正文里的一段文字，就会浮出工具条：可以直接加格式，也可以让 AI 改写、扩写、缩写、润色，或留一条批注。')
+                : annotations.map((annotation) =>
+                    h(
+                      'div',
+                      { key: annotation.id, className: 'wcv-anno', 'data-status': annotation.status },
+                      h(
+                        'div',
+                        { className: 'wcv-annoHead' },
+                        h('span', { className: 'wcv-annoKind' }, ANNOTATION_KIND_LABEL[annotation.kind] ?? annotation.kind),
+                        h('span', null, annotation.author === 'agent' ? 'AI' : '我'),
+                        h('span', { style: { marginLeft: 'auto' } }, formatTime(annotation.createdAt)),
+                      ),
+                      annotation.quote !== ''
+                        ? h('div', { className: 'wcv-annoQuote' }, annotation.quote)
+                        : null,
+                      annotation.anchorLost === true
+                        ? h('div', { className: 'wcv-annoLost' }, '需重新标注：这段文字已不在正文中（正文被改过）。')
+                        : null,
+                      annotation.instruction !== ''
+                        ? h('div', { className: 'wcv-annoText' }, annotation.instruction)
+                        : null,
+                      ...(Array.isArray(annotation.thread) ? annotation.thread : []).map((entry, index) =>
+                        h(
+                          'div',
+                          { key: index, className: 'wcv-annoThread' },
+                          `${entry.author === 'agent' ? 'AI' : '我'}：${entry.text}`,
+                        ),
+                      ),
+                      annotation.status === 'open'
+                        ? h(
+                            'div',
+                            { className: 'wcv-annoActions' },
+                            h(
+                              'button',
+                              {
+                                className: 'wcv-mini',
+                                onClick: () => void updateAnnotation(annotation.id, { status: 'resolved', resolvedVersion: baseVersionRef.current }),
+                              },
+                              '已处理',
+                            ),
+                            h(
+                              'button',
+                              { className: 'wcv-mini', onClick: () => void updateAnnotation(annotation.id, { status: 'dismissed' }) },
+                              '忽略',
+                            ),
+                            h('button', { className: 'wcv-mini', onClick: () => void deleteAnnotation(annotation.id) }, '删除'),
+                          )
+                        : h(
+                            'div',
+                            { className: 'wcv-annoActions' },
+                            h('span', { className: 'wcv-annoHead' }, annotation.status === 'resolved' ? '已处理' : '已忽略'),
+                            h('button', { className: 'wcv-mini', onClick: () => void deleteAnnotation(annotation.id) }, '删除'),
+                          ),
+                    ),
+                  ),
             ),
           ),
 
@@ -1059,6 +1541,199 @@ window.__ModuleLoader__.load({
       return keys.map((key) => `[${key}]`).join(' ');
     }
 
+    /** 批注种类的中文名。 */
+    const ANNOTATION_KIND_LABEL = {
+      comment: '批注',
+      rewrite: '改写',
+      expand: '扩写',
+      shorten: '缩写',
+      polish: '润色',
+      continue: '续写',
+      ask: '提问',
+    };
+
+    /** 需要行首前缀的块级格式。 */
+    const LINE_FORMATS = {
+      h1: { prefix: '# ', toggle: ['# ', '## ', '### '] },
+      h2: { prefix: '## ', toggle: ['# ', '## ', '### '] },
+      h3: { prefix: '### ', toggle: ['# ', '## ', '### '] },
+      quote: { prefix: '> ', toggle: ['> '] },
+      ul: { prefix: '- ', toggle: ['- ', '* ', '1. '] },
+      ol: { prefix: '1. ', toggle: ['- ', '* ', '1. '] },
+    };
+
+    /** 行内格式的包裹标记。 */
+    const INLINE_FORMATS = {
+      bold: '**',
+      italic: '*',
+      strike: '~~',
+      code: '`',
+    };
+
+    /**
+     * 对选区应用 Markdown 格式。
+     *
+     * 全部变换都是纯函数：给定文本与选区，返回新文本与新选区，
+     * 这样工具栏、浮动工具条、快捷键都能复用同一套逻辑，且易于测试。
+     *
+     * @param value - 当前全文。
+     * @param start - 选区起点。
+     * @param end - 选区终点。
+     * @param kind - 格式种类。
+     * @returns { value, start, end }
+     */
+    function transformSelection(value, start, end, kind) {
+      const from = Math.max(0, Math.min(start, end));
+      const to = Math.min(value.length, Math.max(start, end));
+      const selected = value.slice(from, to);
+
+      // 行内格式：在选区两侧加标记；若已包裹则去掉（再次点击即取消）。
+      if (Object.hasOwn(INLINE_FORMATS, kind)) {
+        const marker = INLINE_FORMATS[kind];
+        const before = value.slice(0, from);
+        const after = value.slice(to);
+
+        // 情况一：选区自己就把标记包了进去（用户连标记一起选中）。
+        if (
+          selected.length >= marker.length * 2 &&
+          selected.startsWith(marker) &&
+          selected.endsWith(marker)
+        ) {
+          const inner = selected.slice(marker.length, selected.length - marker.length);
+          return { value: `${before}${inner}${after}`, start: from, end: from + inner.length };
+        }
+
+        // 情况二：标记在选区外侧。
+        const alreadyWrapped = before.endsWith(marker) && after.startsWith(marker) && to > from;
+        if (alreadyWrapped) {
+          return {
+            value: before.slice(0, before.length - marker.length) + selected + after.slice(marker.length),
+            start: from - marker.length,
+            end: to - marker.length,
+          };
+        }
+
+        const inner = selected === '' ? '文字' : selected;
+        return {
+          value: `${before}${marker}${inner}${marker}${after}`,
+          start: from + marker.length,
+          end: from + marker.length + inner.length,
+        };
+      }
+
+      // 块级格式：找到选区覆盖的整行范围，逐行加/去前缀。
+      if (Object.hasOwn(LINE_FORMATS, kind)) {
+        const spec = LINE_FORMATS[kind];
+        const lineStart = value.lastIndexOf('\n', Math.max(0, from - 1)) + 1;
+        let lineEnd = value.indexOf('\n', to);
+        if (lineEnd === -1) lineEnd = value.length;
+        const block = value.slice(lineStart, lineEnd);
+        const lines = block.split('\n');
+        const allHavePrefix = lines.every((line) => spec.prefix === '' || line.startsWith(spec.prefix));
+        const nextLines = lines.map((line) => {
+          const stripped = spec.toggle.reduce(
+            (acc, prefix) => (acc.startsWith(prefix) ? acc.slice(prefix.length) : acc),
+            line,
+          );
+          return allHavePrefix ? stripped : `${spec.prefix}${stripped}`;
+        });
+        const nextBlock = nextLines.join('\n');
+        return {
+          value: value.slice(0, lineStart) + nextBlock + value.slice(lineEnd),
+          start: lineStart,
+          end: lineStart + nextBlock.length,
+        };
+      }
+
+      if (kind === 'codeblock') {
+        const before = value.slice(0, from);
+        const after = value.slice(to);
+        const inner = selected === '' ? '代码' : selected;
+        // 代码块必须自成一行：前面不是行首就补一个换行。
+        const lead = before === '' || before.endsWith('\n') ? '' : '\n';
+        const block = `${lead}\`\`\`\n${inner}\n\`\`\``;
+        const innerStart = from + lead.length + 4;
+        return { value: `${before}${block}${after}`, start: innerStart, end: innerStart + inner.length };
+      }
+
+      if (kind === 'hr') {
+        const before = value.slice(0, from);
+        const after = value.slice(to);
+        const block = `${before.endsWith('\n') || before === '' ? '' : '\n'}---\n`;
+        return { value: `${before}${block}${after}`, start: from + block.length, end: from + block.length };
+      }
+
+      if (kind === 'link') {
+        const before = value.slice(0, from);
+        const after = value.slice(to);
+        const text = selected === '' ? '链接文字' : selected;
+        const block = `[${text}](url)`;
+        return { value: `${before}${block}${after}`, start: from + text.length + 3, end: from + text.length + 6 };
+      }
+
+      return { value, start: from, end: to };
+    }
+
+    /**
+     * 在被批注的区间两侧插入高亮标记，用于「批注高亮层」。
+     * @param content - 正文。
+     * @param annotations - 批注数组（含 range）。
+     * @returns [{ text, status, kind }] 片段数组。
+     */
+    function buildHighlightSegments(content, annotations) {
+      const ranges = annotations
+        .filter((item) => item.anchorLost !== true && Number.isInteger(item.range?.start))
+        .map((item) => ({
+          start: Math.max(0, Math.min(item.range.start, content.length)),
+          end: Math.max(0, Math.min(item.range.end, content.length)),
+          status: item.status,
+          kind: item.kind,
+        }))
+        .filter((item) => item.end > item.start)
+        .sort((a, b) => a.start - b.start);
+
+      const segments = [];
+      let cursor = 0;
+      for (const range of ranges) {
+        if (range.start < cursor) continue; // 重叠的批注只画第一段，避免标记错乱
+        if (range.start > cursor) segments.push({ text: content.slice(cursor, range.start), mark: false });
+        segments.push({
+          text: content.slice(range.start, range.end),
+          mark: true,
+          status: range.status,
+          kind: range.kind,
+        });
+        cursor = range.end;
+      }
+      if (cursor < content.length) segments.push({ text: content.slice(cursor), mark: false });
+      return segments;
+    }
+
+    /** 由选区起点算出浮动工具条该出现的位置（基于高亮层的镜像排版）。 */
+    function measureCaret(layer, offset) {
+      if (layer === null || layer === undefined) return null;
+      const inner = layer.firstElementChild;
+      if (inner === null || inner === undefined) return null;
+      const walker = document.createTreeWalker(inner, NodeFilter.SHOW_TEXT);
+      let remaining = offset;
+      let node = walker.nextNode();
+      while (node !== null) {
+        const length = node.textContent?.length ?? 0;
+        if (remaining <= length) {
+          const range = document.createRange();
+          range.setStart(node, remaining);
+          range.setEnd(node, Math.min(length, remaining));
+          const rect = range.getBoundingClientRect();
+          if (rect.width === 0 && rect.height === 0) return { top: 0, left: 0 };
+          const layerRect = layer.getBoundingClientRect();
+          return { top: rect.top - layerRect.top, left: rect.left - layerRect.left };
+        }
+        remaining -= length;
+        node = walker.nextNode();
+      }
+      return null;
+    }
+
     /** 安全取一个可选服务：拿不到就返回 undefined，绝不抛错。 */
     function optionalService(scoped, name) {
       let value;
@@ -1352,6 +2027,9 @@ window.__ModuleLoader__.load({
     Object.defineProperty(exports, Symbol.toStringTag, { value: 'Module' });
     exports.apply = apply;
     exports.inject = inject;
+    // 纯函数暴露给单元测试。它们不依赖 DOM，也不产生副作用，
+    // 但内联在 bundle 里无法被 import，所以留这个测试入口。
+    exports.__internals = { transformSelection, buildHighlightSegments, formatKeys, modifiersOf };
     return exports;
   },
 });
