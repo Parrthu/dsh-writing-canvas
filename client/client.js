@@ -35,6 +35,10 @@ window.__ModuleLoader__.load({
     /** 右栏标签页的 kind（按 kind 打开）与注册 id。 */
     const CANVAS_KIND = 'writing-canvas';
     const CANVAS_TAB_ID = 'dsh-writing-canvas';
+    /** 「打开写作画布」命令的 id：导览卡片靠它显示平台快捷键。 */
+    const OPEN_COMMAND_ID = 'writing.canvas';
+    /** 本插件在设置页列表里的条目 id。 */
+    const PLUGIN_ID = 'dsh-writing-canvas';
     /** 宿主 API 前缀，与 src/routes.js 的 API_PREFIX 一致。 */
     const API_BASE = '/writing-canvas/api';
     /** 停止输入后多久自动保存。 */
@@ -125,6 +129,16 @@ window.__ModuleLoader__.load({
   color: var(--dsw-alias-label-secondary, #6b6b6b); }
 .wcv-constraintList { margin: 6px 0 0; padding-left: 20px; font-size: 12px; line-height: 1.75; }
 .wcv-constraintList li { margin-bottom: 3px; }
+.wcv-settings { display: flex; flex-direction: column; gap: 10px; padding: 4px 2px 12px; max-width: 720px; }
+.wcv-settingsTitle { font-size: 15px; font-weight: 700; }
+.wcv-settingsHint { font-size: 12.5px; line-height: 1.75; color: var(--dsw-alias-label-secondary, #6b6b6b); }
+.wcv-settingsRow { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 10px 12px; border-radius: 9px;
+  border: 1px solid var(--dsw-alias-border-l1, rgba(128,128,128,0.28));
+  background: var(--dsw-alias-bg-layer-1, rgba(128,128,128,0.05)); }
+.wcv-settingsLabel { font-size: 13.5px; font-weight: 600; min-width: 96px; }
+.wcv-keycaps { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px;
+  letter-spacing: 0.5px; color: var(--dsw-alias-label-primary, #1a1a1a); min-width: 120px; }
 `;
 
     /** 注入样式（模块体副作用，仅在 bundle 首次 materialize 时执行一次）。 */
@@ -813,6 +827,238 @@ window.__ModuleLoader__.load({
       };
     }
 
+    /**
+     * 导览卡片用的彩色图标（自己画，不依赖内部 artwork 导出）。
+     * 浅蓝纸张 + 蓝色文字线 + 橙色笔尖，在明暗两种主题下都能看清。
+     */
+    function WritingArtwork(props) {
+      const size =
+        props !== null && typeof props === 'object' && typeof props.size === 'number' && props.size > 0
+          ? props.size
+          : 20;
+      return h(
+        'svg',
+        { width: size, height: size, viewBox: '0 0 24 24', fill: 'none', 'aria-hidden': 'true' },
+        // 纸张
+        h('path', {
+          d: 'M6 3h8l4 4v14H6z',
+          fill: '#e8f0ff',
+          stroke: '#7ba7f0',
+          strokeWidth: 1.2,
+          strokeLinejoin: 'round',
+        }),
+        // 折角
+        h('path', { d: 'M14 3v4h4', fill: 'none', stroke: '#7ba7f0', strokeWidth: 1.2, strokeLinejoin: 'round' }),
+        // 文字线
+        h('path', {
+          d: 'M9 12.5h5.5M9 15.5h3.5',
+          stroke: '#9dbcf5',
+          strokeWidth: 1.4,
+          strokeLinecap: 'round',
+        }),
+        // 笔
+        h('path', {
+          d: 'M20.6 8.4 15 14l-2.3.7.7-2.3 5.6-5.6a1.15 1.15 0 0 1 1.6 1.6Z',
+          fill: '#ffb020',
+          stroke: '#e08a00',
+          strokeWidth: 1.1,
+          strokeLinejoin: 'round',
+        }),
+      );
+    }
+
+    /** 纯修饰键的 code：录制时要忽略，它们不能单独成为快捷键。 */
+    const MODIFIER_CODES = [
+      'ShiftLeft',
+      'ShiftRight',
+      'ControlLeft',
+      'ControlRight',
+      'AltLeft',
+      'AltRight',
+      'MetaLeft',
+      'MetaRight',
+    ];
+
+    /** 把一次的按键事件转成物理修饰键列表（与快捷键服务的命名一致）。 */
+    function modifiersOf(event) {
+      const modifiers = [];
+      if (event.ctrlKey) modifiers.push('control');
+      if (event.altKey) modifiers.push('alt');
+      if (event.shiftKey) modifiers.push('shift');
+      if (event.metaKey) modifiers.push('meta');
+      return modifiers;
+    }
+
+    /**
+     * 生成设置页组件（需要闭包里的 ctx）。
+     * @param ctx - 客户端 Cordis 上下文。
+     * @returns 设置页组件。
+     */
+    function makeSettingsPage(ctx) {
+      return function WritingSettingsPageInner() {
+        const [rows, setRows] = React.useState(null);
+        const [recording, setRecording] = React.useState(false);
+        const [message, setMessage] = React.useState(null);
+        const [preview, setPreview] = React.useState(null);
+
+        /** 读取命令目录中我们这一条。 */
+        const readRow = React.useCallback(() => {
+          const shortcuts = optionalService(ctx, 'shortcuts');
+          if (shortcuts === undefined || shortcuts.catalog === undefined) return null;
+          const all = shortcuts.catalog.getSnapshot();
+          if (!Array.isArray(all)) return null;
+          return all.find((row) => row.id === OPEN_COMMAND_ID) ?? null;
+        }, []);
+
+        const refresh = React.useCallback(() => {
+          setRows(readRow());
+        }, [readRow]);
+
+        // 订阅目录变化（用户在系统快捷键页改动时这里也会跟着更新）。
+        React.useEffect(() => {
+          refresh();
+          const shortcuts = optionalService(ctx, 'shortcuts');
+          const catalog = shortcuts?.catalog;
+          if (catalog === undefined || typeof catalog.subscribe !== 'function') return undefined;
+          return catalog.subscribe(() => refresh());
+        }, [refresh]);
+
+        /** 执行一次偏好编辑，并用**实际生效的键位**回显结果。 */
+        const applyEdit = async (edit) => {
+          const shortcuts = optionalService(ctx, 'shortcuts');
+          if (shortcuts === undefined || typeof shortcuts.edit !== 'function') {
+            setMessage('快捷键服务不可用，无法修改。');
+            return;
+          }
+          try {
+            const snapshot = typeof shortcuts.readCurrent === 'function' ? await shortcuts.readCurrent() : undefined;
+            const revision = snapshot?.revision;
+            const result = await shortcuts.edit(edit, revision);
+            const status = result?.status ?? '未知';
+            // 等一下让目录刷新，再以实际生效的键位为准回显。
+            await new Promise((resolve) => setTimeout(resolve, 60));
+            refresh();
+            const row = readRow();
+            const effective = row?.keys ?? row?.binding?.keys ?? null;
+            setMessage(
+              status === 'accepted' || status === 'ok' || status === 'applied'
+                ? `已生效：${formatKeys(effective)}`
+                : `修改未生效（服务返回 ${status}）。当前键位：${formatKeys(effective)}`,
+            );
+            report('shortcut:edit', { edit, status, keys: effective });
+          } catch (error) {
+            setMessage(`修改快捷键失败：${String(error)}`);
+            report('shortcut:edit-failed', { edit, reason: describe(error) });
+          }
+        };
+
+        /** 录制按键。 */
+        const onKeyDown = (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          if (event.key === 'Escape') {
+            setRecording(false);
+            setPreview(null);
+            setMessage('已取消录制。');
+            return;
+          }
+          if (MODIFIER_CODES.includes(event.code)) return; // 等真正的键
+          const binding = { code: event.code, modifiers: modifiersOf(event) };
+          if (binding.modifiers.length === 0) {
+            setPreview({ binding, issue: '至少需要一个修饰键（⌘/Ctrl/Alt/Shift）。', conflicts: [] });
+            return;
+          }
+          const shortcuts = optionalService(ctx, 'shortcuts');
+          const described =
+            shortcuts !== undefined && typeof shortcuts.describeBinding === 'function'
+              ? shortcuts.describeBinding(binding)
+              : { binding, keys: [event.code], issue: null, conflicts: [] };
+          setPreview(described);
+          if (described.issue !== null && described.issue !== undefined) {
+            setMessage(`这个组合不可用：${described.issue}`);
+            return;
+          }
+          const conflicts = (described.conflicts ?? []).filter((id) => id !== OPEN_COMMAND_ID);
+          if (conflicts.length > 0) {
+            setMessage(`这个组合与已有命令冲突：${conflicts.join('、')}。请换一个。`);
+            return;
+          }
+          setRecording(false);
+          void applyEdit({ type: 'set', id: OPEN_COMMAND_ID, binding });
+        };
+
+        const current = rows;
+        const currentKeys = current?.keys ?? null;
+
+        return h(
+          'div',
+          { className: 'wcv-settings' },
+          h('div', { className: 'wcv-settingsTitle' }, '写作插件'),
+          h(
+            'div',
+            { className: 'wcv-settingsHint' },
+            '写作画布固定住在对话右侧，正文自动保存、可回溯版本。这里可以改打开它的快捷键。',
+          ),
+
+          h('div', { className: 'wcv-settingsRow' },
+            h('div', { className: 'wcv-settingsLabel' }, '打开写作画布'),
+            h('div', { className: 'wcv-keycaps' }, formatKeys(currentKeys)),
+            recording
+              ? h(
+                  'button',
+                  {
+                    className: 'wcv-btn wcv-btn--primary',
+                    // 自动聚焦，用户按下组合时能被这个按钮接住。
+                    ref: (node) => {
+                      if (node !== null && document.activeElement !== node) node.focus();
+                    },
+                    onKeyDown,
+                    onBlur: () => {
+                      setRecording(false);
+                      setPreview(null);
+                    },
+                  },
+                  '请按下组合键…（Esc 取消）',
+                )
+              : h(
+                  'button',
+                  { className: 'wcv-btn', onClick: () => { setMessage(null); setPreview(null); setRecording(true); } },
+                  '录制新快捷键',
+                ),
+            h(
+              'button',
+              { className: 'wcv-btn', onClick: () => void applyEdit({ type: 'reset', id: OPEN_COMMAND_ID }) },
+              '恢复默认',
+            ),
+          ),
+
+          preview !== null && preview.keys !== undefined
+            ? h('div', { className: 'wcv-settingsHint' }, `将设置为：${formatKeys(preview.keys)}`)
+            : null,
+
+          message !== null ? h('div', { className: 'wcv-settingsHint' }, message) : null,
+
+          h(
+            'div',
+            { className: 'wcv-settingsHint' },
+            '提示：自动开启只在每个会话第一次进入时尝试一次，之后你关掉它就不会再打扰；',
+            '随时可以用上面的快捷键、右侧面板的「+」导览卡片，或工作台里的按钮重新打开。',
+          ),
+          h(
+            'div',
+            { className: 'wcv-settingsHint' },
+            '这些键位同样会出现在「设置 → 快捷键」的统一下拉里，两处改的是同一份配置。',
+          ),
+        );
+      };
+    }
+
+    /** 把键位数组渲染成按键胶囊。 */
+    function formatKeys(keys) {
+      if (!Array.isArray(keys) || keys.length === 0) return '未绑定';
+      return keys.map((key) => `[${key}]`).join(' ');
+    }
+
     /** 安全取一个可选服务：拿不到就返回 undefined，绝不抛错。 */
     function optionalService(scoped, name) {
       let value;
@@ -944,14 +1190,16 @@ window.__ModuleLoader__.load({
               kind: CANVAS_KIND,
               title: () => '写作画布',
               keepMounted: true,
-              // guide 入口：右栏的「+」/指南页里会出现一张「写作画布」卡片，
-              // 用户点它即可打开。这是自动开启之外的手动兜底路径。
+              // guide 入口：右栏「+」打开的导览页里会出现一张卡片。
+              // commandId 让卡片右侧自动显示该命令在当前平台的有效快捷键。
               guide: [
                 {
                   id: 'writing-canvas',
+                  commandId: OPEN_COMMAND_ID,
                   order: 30,
                   title: () => '写作画布',
-                  description: () => '与对话并排的写作正文，自动保存、可回溯版本',
+                  description: () => '启用实时写作',
+                  icon: WritingArtwork,
                 },
               ],
             });
@@ -963,6 +1211,101 @@ window.__ModuleLoader__.load({
       } else {
         report('tabtype:unavailable', { hasService: tabs !== undefined });
       }
+
+      // 打开画布的命令 + 平台默认快捷键（导览卡片据此显示 ⌘⇧W / Ctrl+Shift+W）。
+      //
+      // 幂等注册：开发期客户端 bundle 会被热重载反复 apply，而快捷键服务对重复 id
+      // 直接抛错（Duplicate shortcut command）。因此这里先查命令目录，已存在就不重复注册；
+      // 同时延迟补试一次，覆盖「旧注册还没被销毁 → 新注册被拒」这一反向竞态。
+      ctx.inject(['shortcuts'], (shortcutsCtx) => {
+        let registered = false;
+        // 跨热重载记住上一次的注销函数，好让每次注册都用**新鲜的闭包**。
+        const HANDLE_KEY = '__dshWritingCanvasShortcutDispose__';
+
+        const commandPresent = () => {
+          const catalog = shortcutsCtx.shortcuts?.catalog;
+          if (catalog === undefined || typeof catalog.getSnapshot !== 'function') return false;
+          const rows = catalog.getSnapshot();
+          return Array.isArray(rows) && rows.some((row) => row.id === OPEN_COMMAND_ID);
+        };
+
+        const ensureCommand = () => {
+          if (registered) return;
+          const shortcuts = shortcutsCtx.shortcuts;
+          if (shortcuts === undefined || typeof shortcuts.register !== 'function') return;
+
+          // 已经注册过就直接复用。
+          //
+          // 为什么必须先查：客户端 bundle 热重载时会再次执行 apply，但**旧的 Cordis
+          // fiber 并不会被销毁**，旧注册仍然活着；此时再注册会撞上 duplicate id。
+          // 复用是安全的——旧 fiber 既然还活着，它的闭包与 ctx 就都还有效。
+          // 生产环境只 apply 一次，走不到这个分支。
+          if (commandPresent()) {
+            registered = true;
+            report('shortcut:reused', { id: OPEN_COMMAND_ID });
+            return;
+          }
+
+          // 命令不存在（首次加载，或旧 fiber 确实已销毁）：撤掉句柄后重新注册。
+          const previous = globalThis[HANDLE_KEY];
+          if (typeof previous === 'function') {
+            try {
+              previous();
+            } catch {
+              // 旧注销失败不影响后面重新注册。
+            }
+            globalThis[HANDLE_KEY] = undefined;
+          }
+
+          try {
+            const dispose = shortcuts.register({
+              id: OPEN_COMMAND_ID,
+              label: () => '写作画布',
+              aliases: ['writing canvas', '写作画布', '写作'],
+              defaults: {
+                'desktop:macos': { code: 'KeyW', modifiers: ['primary', 'shift'] },
+                'desktop:windows': { code: 'KeyW', modifiers: ['primary', 'shift'] },
+                'desktop:linux': { code: 'KeyW', modifiers: ['primary', 'shift'] },
+                // Web 端浏览器会先截获两个修饰键的组合，因此再加 alt。
+                // 注意：Web 只有 macOS/Windows 允许 3 个修饰键，Linux 保留受限集合，
+                // 所以 web:linux 故意留空（不绑定），与官方 files / terminal 插件一致。
+                'web:macos': { code: 'KeyW', modifiers: ['primary', 'shift', 'alt'] },
+                'web:windows': { code: 'KeyW', modifiers: ['primary', 'shift', 'alt'] },
+              },
+              regions: ['page', 'editable', 'terminal'],
+              modals: [],
+              resolve: () => ({
+                status: 'handled',
+                run: () => {
+                  openBeside('shortcut');
+                },
+              }),
+            });
+            registered = true;
+            globalThis[HANDLE_KEY] = dispose;
+            shortcutsCtx.effect(
+              () => () => {
+                if (globalThis[HANDLE_KEY] === dispose) globalThis[HANDLE_KEY] = undefined;
+                dispose();
+              },
+              'writing-canvas: 打开画布快捷键',
+            );
+            report('shortcut:registered', { id: OPEN_COMMAND_ID });
+          } catch (error) {
+            // 旧注册可能由 Cordis 稍后才销毁；此时退化为复用现有命令，绝不让插件加载失败。
+            if (commandPresent()) {
+              registered = true;
+              report('shortcut:reused', { id: OPEN_COMMAND_ID, reason: describe(error) });
+              return;
+            }
+            report('shortcut:failed', { id: OPEN_COMMAND_ID, reason: describe(error) });
+          }
+        };
+
+        ensureCommand();
+        const retry = setTimeout(ensureCommand, 1500);
+        shortcutsCtx.effect(() => () => clearTimeout(retry), 'writing-canvas: 快捷键注册补试');
+      });
 
       // 形态 A：右栏标签页 body（声明感知注入，右栏存在时才生效）。
       ctx.slots.inject('sidebar.right.pane.tab', () =>
@@ -988,6 +1331,14 @@ window.__ModuleLoader__.load({
         ctx.slots.register({ name: 'main', key: PANEL_ID }, makeWorkbenchPanel(openBeside)),
       );
 
+      // 形态 C：插件设置页（含快捷键录制器）。
+      ctx.slots.inject('settings.section', () =>
+        ctx.slots.register(
+          { name: 'settings.section', id: PLUGIN_ID, order: 55, label: '写作插件' },
+          makeSettingsPage(ctx),
+        ),
+      );
+
       ctx.effect(() => disposeStyles, 'writing-canvas: 客户端样式');
     }
 
@@ -999,3 +1350,4 @@ window.__ModuleLoader__.load({
     return exports;
   },
 });
+
