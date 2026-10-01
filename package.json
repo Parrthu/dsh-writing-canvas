@@ -1,7 +1,7 @@
 {
   "name": "dsh-writing-canvas",
   "version": "0.1.0",
-  "description": "DeepSeek Harness 写作插件：全新写作工作台界面、可插拔写作类型、强指令约束提示词、Markdown/DOCX 双轨格式、Canvas 编辑批注与不可变历史",
+  "description": "DeepSeek Harness 的写作插件：对话旁边常驻一块写作画布，选中即改、可批注、带不可变版本历史，并能导出带版式的 DOCX。",
   "type": "module",
   "license": "MIT",
   "main": "src/index.js",
