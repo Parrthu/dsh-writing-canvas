@@ -1,13 +1,11 @@
 # dsh-writing-canvas
 
 DeepSeek Harness 的写作插件，包名 `dsh-writing-canvas`。
-
-装完之后，对话右边会多出一块写作画布：左边照常跟 AI 说话，右边看稿子。
-AI 写的东西一段段长出来，你随时改；改完一键导出成带版式的 DOCX。
-
-写小说、公文、视频文案这种要反复改的长文本，用它比在对话里来回滚动舒服。
-
----
+它让你和 AI 一起写东西，边聊边改。
+装好之后，界面上会多出三处：
+1. 模式选择里多一个「写作模式」。
+2. 右侧边栏多一块**写作画布**。
+3. 顶栏多一个写作工作台。
 
 ## 安装
 
@@ -18,14 +16,12 @@ AI 写的东西一段段长出来，你随时改；改完一键导出成带版�
 gh release download v0.1.0 --repo Parrthu/dsh-writing-canvas --pattern '*.tgz'
 dsh plugin --profile <profile> add file:./dsh-writing-canvas-0.1.0.tgz
 
-# 或者直接用源码目录（改代码立即生效，适合开发）
+# 或者直接用源码目录
 dsh plugin --profile <profile> add file:/path/to/写作插件
 ```
 
-装完要**重启一次** DeepSeek Harness。DSH 只在启动时读插件组合，重启后永久生效，
-不用再做别的设置。
-
-DOCX 导出要用 `python-docx`，DSH 内置的 Python 里已经有了，不用自己装。
+装完要**重启一次** DeepSeek Harness。
+DOCX 导出靠 `python-docx`，DSH 已经内置了。
 
 卸载：
 
@@ -35,7 +31,7 @@ dsh plugin --profile <profile> remove dsh-writing-canvas
 
 ---
 
-## 它做什么
+## 用法
 
 | | |
 |---|---|
@@ -52,7 +48,7 @@ dsh plugin --profile <profile> remove dsh-writing-canvas
 
 ---
 
-## 几条硬规则
+## 安全边界约束（AI自己写的）
 
 这些不是文档里的约定，是代码里拦得住的行为：
 
@@ -61,7 +57,7 @@ dsh plugin --profile <profile> remove dsh-writing-canvas
 | 空白内容不能覆盖非空文档 | `store.js` 直接拒绝，除非显式传 `allowEmpty: true` |
 | 基于过期版本的写入会被拒绝 | 带了 `baseVersion` 而服务端已经前进时返回 409，不写入 |
 | AI 改你写过的字只能提议 | `writing_canvas_suggest` 只写 `suggestions.json`，你接受才动正文 |
-| 未处理的批注不改变正文 | 批注和正文分开存，AI 读到后要先跟你确认 |
+| 未处理的批注不改变正文 | 批注和正文分开存，AI 读到后要先向用户确认 |
 | 格式必须真的落地 | 生成 DOCX 后重新打开逐项核对 13 项，没过就报失败 |
 | 版本不能原地覆盖 | 还原是把历史内容写成新版本，旧版本一直留着 |
 
@@ -112,14 +108,7 @@ npm run check     # 语法检查
 └─ docs/
 ```
 
-有两条设计上刻意的约束：
-
-1. **不静态导入任何 `@deepseek-ai/*` 包**。所有服务用 `ctx.inject([...])` 动态取，
-   于是不用声明 peerDependencies，也不会被版本兼容性网关拦下。
-2. **没有构建步骤**。`src/` 和 `client/` 里的文件就是最终产物。客户端 bundle 直接手写
-   `window.__ModuleLoader__.load({ id, factory })`，只 require 平台基线模块。
-
-### 数据放哪
+### 数据存储
 
 ```
 <工作区>/.writing-canvas/
@@ -131,50 +120,6 @@ npm run check     # 语法检查
 ```
 
 一个会话一份文档（`docId = s-<会话 id>`），所以画布跟着对话走，也跟着工作区走。
-
-### 改代码即时生效
-
-`hmr` 条目默认只监听配置、不监听模块源码。要改代码即时生效，在 profile 的
-`cordis.patch.yml` 末尾加：
-
-```yaml
-- id: hmr
-  config:
-    root:
-      - /绝对路径/写作插件
-```
-
-得在启动前配好，加完重启一次。之后改 `src/*.js` 和 `client/client.js` 都会即时生效。
-这段跟插件本体无关，删掉不影响功能。
-
-### 怎么验证界面（不用人盯着看）
-
-见 [docs/开发环境能力.md](docs/开发环境能力.md)，要点：
-
-1. **截图**：`screencapture -x /tmp/s.png`，再用 Pillow 裁剪放大。
-   Retina 屏上截图像素是逻辑坐标的 2 倍。
-2. **结构自检**：`curl .../writing-canvas/api/client-report` 读自检数据。
-   浮动工具条、版本差异视图这些都能程序化验证，不需要辅助功能权限。
-3. **客户端上报**：界面把每步操作上报到同一个接口，出问题不用靠猜。
-
----
-
-## 已知限制
-
-- **标题不改变字号**，只改颜色和字重。字号一变宽度就变，会跟 textarea 的光标错位。
-  要真正放大标题得换成 contenteditable，那是另一套做法。
-- **`#` 后面要有空格才算标题**（CommonMark 标准）。`#话题` 这种不会被误判成标题。
-- **代码块内部不解析 Markdown**，视觉上保持源码样子。
-- **DOCX 校验核对的是写进文件里的字体名和字号／行距**。实际显示效果取决于看文档的机器
-  装没装这些字体（`仿宋_GB2312`、`方正小标宋简体` 等），缺了 Word/WPS 会自己替换。
-- **Markdown 子集**：标题、引用、有序／无序列表、分隔线、行内加粗／斜体／删除线／代码、链接。
-  表格、脚注、图片不参与 DOCX 转换。
-- **画布按会话隔离**：一个会话一份文档，暂时没有「把稿子复制到另一个会话」的一键操作。
-- **批注和建议靠区间加原文双重锚定**。正文改动大了锚点会丢，界面显示「需重新标注」，
-  不会指到错位置。
-- **实时连接依赖宿主进程存活**。宿主重启后客户端会自动退避重连。
-- **还没上 npm**，`dsh plugin add dsh-writing-canvas` 暂时用不了。
-- **真实打字时的手感**（光标、输入法）没有自动化验证。
 
 ---
 
