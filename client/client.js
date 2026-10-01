@@ -2305,6 +2305,10 @@ window.__ModuleLoader__.load({
                     'div',
                     { className: 'wcv-highlightInner' },
                     ...renderRichText(text, annotations, suggestions),
+                    // 正文以换行结尾时，textarea 会为它多渲染一行，而 pre-wrap 的 div
+                    // 不会——两层就此差一行高度，对齐体检判为分叉并退回纯文本。
+                    // 补一个零宽空格：占一行，但不占宽度，光标坐标不受影响。
+                    text.endsWith('\n') ? h('span', { key: '__trailingLine' }, '\u200b') : null,
                   ),
                 ),
                 // 空白文档 + 未指定类型时，先让用户选写作模式（新会话的入口体验）

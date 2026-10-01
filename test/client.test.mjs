@@ -1023,3 +1023,24 @@ test('回归：定位效果要有渲染风暴熔断，不能再以白屏收场',
   assert.match(CLIENT_SOURCE, /count > 50/, '超过阈值就停手');
   assert.match(CLIENT_SOURCE, /float:storm/, '熔断要上报，便于事后定位');
 });
+
+test('回归：正文以换行结尾时，镜像层要补一个占位行', () => {
+  // textarea 会为末尾的换行渲染一行，pre-wrap 的 div 不会 —— 两层就此差一行
+  // （实测 26px），对齐体检判为分叉并整个退回纯文本。
+  // 之前测的文本末尾都没换行，所以一直没暴露；README 末尾是 "MIT\n"，一放上去就中招。
+  assert.match(
+    CLIENT_SOURCE,
+    /text\.endsWith\('\\n'\) \? h\('span', \{ key: '__trailingLine' \}, '\\u200b'\) : null/,
+    '末尾换行要用零宽空格占住那一行',
+  );
+  // 零宽空格不占宽度，所以光标的水平坐标不受影响
+  assert.ok(
+    !/__trailingLine'[^)]*'\\u200b\\u200b/.test(CLIENT_SOURCE),
+    '不能塞多个零宽字符',
+  );
+});
+
+test('对齐体检的容差要严（差一行就必须退回）', () => {
+  assert.match(CLIENT_SOURCE, /if \(delta > 3\)/, '超过 3px 就认为分叉');
+  assert.match(CLIENT_SOURCE, /if \(next === previous\) return;/, '内容没变不重复体检');
+});
