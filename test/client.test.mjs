@@ -928,3 +928,50 @@ test('回归：滚动状态更新要防抖，不能每次 scroll 都 setState', 
     '只在状态真的变化时才 setState',
   );
 });
+
+// ---- 2026-10-01 用户确认：「不是撰写时，我平时打字或看着它就自己往下跑」-------
+//
+// 真凶：服务端每次落盘都推 doc-changed，客户端据此调 refresh，refresh 又调
+// revealContent，而 revealContent 末尾**无条件**把视图拉到底部。
+// 于是「打字 → 自动保存 → 服务端推送 → 视图跳到底部」，与是否在撰写无关。
+
+test('回归：服务端同步不得顺手把视图拉到底部', () => {
+  // refresh 是 doc-changed 的回调，用户打字触发的自动保存回显也走这条路。
+  const refresh = CLIENT_SOURCE.slice(CLIENT_SOURCE.indexOf('const refresh = async ()'));
+  const body = refresh.slice(0, refresh.indexOf('\n        };'));
+  assert.match(body, /revealContent\([^)]*\{ follow: /, '必须显式声明是否跟随');
+  assert.ok(
+    !/revealContent\(data\.latest\?\.content \?\? ''\)/.test(body),
+    '不能再用「不传选项」的老写法——那是无条件跟随',
+  );
+});
+
+test('回归：只有 AI 正在写时才跟随滚动', () => {
+  assert.match(
+    CLIENT_SOURCE,
+    /revealContent\(data\.latest\?\.content \?\? '', \{ follow: data\.writing\?\.active === true \}\)/,
+    '跟随与否必须取决于 writing.active',
+  );
+});
+
+test('回归：内容没变就什么都不做（否则光标会被顶到末尾）', () => {
+  const fn = CLIENT_SOURCE.slice(CLIENT_SOURCE.indexOf('const revealContent = React.useCallback'));
+  const body = fn.slice(0, fn.indexOf('stopReveal),'));
+  assert.match(body, /if \(next === previous\) return;/, '相同内容直接返回');
+  assert.ok(
+    body.indexOf('if (next === previous) return;') < body.indexOf('setText(next)'),
+    '判断要在 setText 之前',
+  );
+});
+
+test('回归：follow 默认关闭，必须是显式传 true 才跟随', () => {
+  assert.match(
+    CLIENT_SOURCE,
+    /const follow = options !== null && typeof options === 'object' && options\.follow === true;/,
+    '默认不跟随，避免任何调用方漏传时又把视图拉走',
+  );
+});
+
+test('回归：接受建议时跟随（用户主动要看改写结果）', () => {
+  assert.match(CLIENT_SOURCE, /revealContent\(data\.latest\.content, \{ follow: true \}\)/, '主动操作要看结果');
+});

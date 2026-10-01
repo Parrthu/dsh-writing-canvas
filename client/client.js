@@ -678,7 +678,6 @@ window.__ModuleLoader__.load({
             applyServer(data);
             setText(data.latest?.content ?? '');
             setAnnotations(Array.isArray(data.annotations) ? data.annotations : []);
-          setSuggestions(Array.isArray(data.suggestions) ? data.suggestions : []);
             setSuggestions(Array.isArray(data.suggestions) ? data.suggestions : []);
             setWriting(data.writing ?? { active: false, startedAt: null, note: '' });
             dirtyRef.current = false;
@@ -782,29 +781,45 @@ window.__ModuleLoader__.load({
         }
       };
 
+      /**
+       * 把服务端的正文呈现出来。
+       *
+       * **只有「正在被写出来」才跟随滚动**（follow: true）。这条区分是必须的：
+       * 服务端每次落盘都会推 doc-changed，客户端据此调 refresh，而 refresh 也会
+       * 走到这里——若不问场合一律拉到底部，用户就会看到「打着字，视图自己往下跑」，
+       * 而且往上翻也会被立刻拽回去。这个现象与被动的自动滚动无关，纯粹是这里太粗。
+       *
+       * @param next - 新正文。
+       * @param options.follow - 是否把视野跟到最新写出的位置，默认 false。
+       */
       const revealContent = React.useCallback(
-        (next) => {
+        (next, options) => {
           const previous = textRef.current;
           stopReveal();
           if (typeof next !== 'string') return;
-          // 新一次撰写/回放重新开始跟随：上一轮里用户可能手动滚动过。
-          followPausedRef.current = false;
-          setFollowPaused(false);
+          const follow = options !== null && typeof options === 'object' && options.follow === true;
+          // 内容没变就什么都不做：既省一次渲染，也避免把光标顶到末尾、
+          // 更避免把视图莫名拉到底（自动保存的回显走的正是这条路）。
+          if (next === previous) return;
+          if (follow) {
+            // 新一次撰写/回放重新开始跟随：上一轮里用户可能手动滚动过。
+            followPausedRef.current = false;
+            setFollowPaused(false);
+          }
           if (previous !== '' && next.startsWith(previous) && next.length > previous.length) {
             let cursor = previous.length;
             const step = Math.max(1, Math.ceil((next.length - previous.length) / 80));
             revealTimerRef.current = setInterval(() => {
               cursor = Math.min(next.length, cursor + step);
               setText(next.slice(0, cursor));
-              // 每推进一格就把视野拉到底——撰写中的焦点跟随。
-              followWritingTail();
+              if (follow) followWritingTail();
               syncHighlightMetrics();
               if (cursor >= next.length) stopReveal();
             }, 16);
             return;
           }
           setText(next);
-          followWritingTail();
+          if (follow) followWritingTail();
         },
         [stopReveal],
       );
@@ -1060,7 +1075,10 @@ window.__ModuleLoader__.load({
             setMessage('AI 刚写入了新版本，但你本地还有未保存的改动，所以没有自动替换。');
             return;
           }
-          revealContent(data.latest?.content ?? '');
+          // 只有 AI 正在写时才跟随：那是「字一个个长出来，视野跟着走」的场合。
+          // 其余 doc-changed（例如用户自己打字触发的自动保存回显）只做同步，
+          // 绝不能顺手把视图拉到底部。
+          revealContent(data.latest?.content ?? '', { follow: data.writing?.active === true });
         };
 
         const scheduleRetry = () => {
@@ -1405,7 +1423,8 @@ window.__ModuleLoader__.load({
           setSuggestions(data.suggestions ?? []);
           if (data.applied === true && data.latest !== undefined) {
             applyServer({ ...data, exists: true, docId: target.docId, workspace: doc?.workspace });
-            revealContent(data.latest.content);
+            // 接受建议是用户主动要看的改写，跟随到新内容。
+            revealContent(data.latest.content, { follow: true });
             setMessage(`已接受建议并写入 v${data.latest.n}。${data.message ?? ''}`);
           } else if (action === 'reject') {
             setMessage('已拒绝这条建议，正文未改动。');
