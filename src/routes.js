@@ -557,8 +557,7 @@ export function createApiHandler({
         const doc = await storeFor(target.workspacePath).readDoc(target.docId);
         const annotations = await annotationsFor(target.workspacePath).list(target.docId, doc?.latest?.content);
         // 必须连建议一起返回。客户端收到 annotations-changed 后只拉这一个接口，
-        // 早先这里只给 annotations，于是「AI 提交了建议、用户却看不到」——
-        // 只有整页刷新（走 /doc）才会出现，症状是「建议右侧没收到」。
+        // 只给 annotations 的话建议就传不到界面上，只有整页刷新（走 /doc）才会出现。
         const suggestions = await suggestionsFor(target.workspacePath).list(target.docId, doc?.latest?.content);
         sendJson(res, 200, { ok: true, docId: target.docId, annotations, suggestions });
         return;
@@ -833,7 +832,7 @@ export function createApiHandler({
           // 否则会留一个没人应答的系统框挂在那儿。
           const controller = new AbortController();
           const onClose = () => controller.abort();
-          // req 与 res 都监听：实测只挂 req 时，客户端超时断开没能可靠触发，
+          // req 与 res 都监听：只挂 req 时，客户端超时断开不一定触发，
           // 结果是系统对话框留在屏幕上没人应答。
           req.on('close', onClose);
           res.on('close', onClose);

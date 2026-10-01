@@ -147,7 +147,7 @@ export function apply(ctx, rawConfig) {
    * 必须用 `ctx.inject` 声明式取，**不能**用 `ctx.get()` 查一次就缓存：
    * `dsh-host-directory-picker-auto` 是「启动时判定宿主处境、再把匹配的后端挂进
    * 内存根树」，也就是服务**出现得比本插件晚**。查一次缓存下来的结果会永远停在
-   * 「拿不到」——这一点已经实测踩过（health 报 service-unavailable）。
+   * 「拿不到」，此后即使服务就绪也不会再补上。
    * `ctx.inject` 会等服务就绪再回调，与 webServer / tools 用的是同一套做法。
    */
   let pickerService;
@@ -176,7 +176,7 @@ export function apply(ctx, rawConfig) {
   /**
    * 拉起系统目录选择框。
    *
-   * 两个坑（都实测踩过）：
+   * 两个容易写错的点：
    *   1. `pick` **不在服务实例上**，而在 `service.capability()` 返回的能力对象上——
    *      判断 `service.pick` 永远是 undefined，会静默退化成"没有选择器"。
    *   2. `signal` 是必需的：native 实现在用户取消时会读 `signal.aborted`，

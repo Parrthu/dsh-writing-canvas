@@ -367,7 +367,7 @@ export function registerWritingTools({
       }
 
       // 保存位置：与界面上的导出按钮保持一致——默认让用户选，
-      // 而不是每次都默默丢进工作区的 exports/（这一点被用户明确抱怨过）。
+      // 而不是每次都默默丢进工作区的 exports/。
       const wanted = typeof args.directory === 'string' ? args.directory.trim() : '';
       let outDir;
       let usedDefaultDir = true;
@@ -452,8 +452,8 @@ export function registerWritingTools({
       const { library } = await targetOf(exec);
       const userSets = library === undefined ? [] : await library.listSets();
       // 必须把内置 DOCX 版式一并列出：本工具的说明写着「分 markdown 与 docx 两种载体」，
-      // 早先只给了 markdown，于是 AI 根本不知道「党政机关公文」「工作报告」这些版式存在，
-      // 与 /format-sets 接口（它两者都给）也对不上。
+      // 只列 markdown 的话，调用方就不知道「党政机关公文」「工作报告」这些版式存在，
+      // 也与 /format-sets 接口（它两者都给）对不上。
       const builtinDocx = listFormatSpecs().map((item) => ({
         id: item.id,
         name: item.label,
