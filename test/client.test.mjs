@@ -43,8 +43,17 @@ async function loadClientExports() {
 }
 
 const client = await loadClientExports();
-const { transformSelection, buildHighlightSegments, formatKeys, modifiersOf, readAgentPresetId, clampFloatPosition } =
-  client.__internals;
+const {
+  transformSelection,
+  buildHighlightSegments,
+  formatKeys,
+  modifiersOf,
+  readAgentPresetId,
+  clampFloatPosition,
+  markdownInlineSegments,
+  markdownSegmentsToText,
+  computeFenceLines,
+} = client.__internals;
 
 test('客户端 bundle 以宿主契约的形态导出', () => {
   assert.equal(typeof client.apply, 'function');
@@ -737,4 +746,128 @@ test('回归：工具条自身要有 max-width 兜底，极窄容器下不溢出
   const block = css.slice(0, css.indexOf('}'));
   assert.match(block, /max-width: calc\(100% - 8px\)/, '要有 max-width 兜底');
   assert.match(block, /flex-wrap: wrap/, '放不下时换行而不是溢出');
+});
+
+// ---- Markdown 所见即所得：解析层 ---------------------------------------------
+//
+// 这套做法能成立只有一个前提：**解析不改变字符**。语法标记是用 visibility
+// 占位隐藏的，不是删掉的——宽度不变，换行位置才不变，光标才落在正确的地方。
+// 所以下面每个用例都先验字符保真，再验样式。
+
+/** 解析并折成便于断言的形状：隐藏标记写成 [x]，带样式的写成 style:text。 */
+const shape = (segments) =>
+  segments.map((s) => (s.hidden === true ? `[${s.text}]` : s.style ? `${s.style}:${s.text}` : s.text)).join('');
+
+test('回归：Markdown 解析必须逐字符保真（否则光标必然错位）', () => {
+  const cases = [
+    '# 那一栏',
+    '**粗体**和*斜体*',
+    '- 列表项一\n- 列表项二',
+    '> 引用一句话',
+    '看这个`code`和[链接](https://a.b)',
+    '~~删除线~~',
+    '普通中文，没有任何标记。',
+    '**未闭合的星号',
+    'my_var 不该被当成斜体',
+    '`**` 里的星号不该生效',
+    '',
+    '\n\n',
+    '***',
+  ];
+  for (const text of cases) {
+    const segments = markdownInlineSegments(text, { atLineStart: true });
+    assert.equal(markdownSegmentsToText(segments), text, `字符必须原样保留：${JSON.stringify(text)}`);
+  }
+});
+
+test('标题：隐藏 # 号，整行套 heading 样式（字号不变）', () => {
+  assert.equal(shape(markdownInlineSegments('# 那一栏', { atLineStart: true })), '[# ]heading:那一栏');
+  // # 只在行首生效
+  assert.equal(shape(markdownInlineSegments('井号 # 在句中', { atLineStart: false })), '井号 # 在句中');
+});
+
+test('粗体 / 斜体 / 删除线 / 行内代码：标记隐藏，内容套样式', () => {
+  assert.equal(shape(markdownInlineSegments('**粗**', { atLineStart: false })), '[**]bold:粗[**]');
+  assert.equal(shape(markdownInlineSegments('*斜*', { atLineStart: false })), '[*]italic:斜[*]');
+  assert.equal(shape(markdownInlineSegments('~~删~~', { atLineStart: false })), '[~~]strike:删[~~]');
+  assert.equal(shape(markdownInlineSegments('`码`', { atLineStart: false })), '[`]code:码[`]');
+});
+
+test('下划线不参与解析（避免把 my_var 之类误判成斜体）', () => {
+  assert.equal(shape(markdownInlineSegments('my_var 和 __x__', { atLineStart: false })), 'my_var 和 __x__');
+});
+
+test('链接：只显示文字，方括号与地址占位隐藏', () => {
+  // shape() 自带一层 [] 表示「隐藏」，所以开头的 `[` 显示为 `[[]`。
+  assert.equal(
+    shape(markdownInlineSegments('[看这里](https://a.b)', { atLineStart: false })),
+    '[[]link:看这里[](https://a.b)]',
+  );
+});
+
+test('行级标记：列表与引用只在行首生效', () => {
+  assert.equal(shape(markdownInlineSegments('- 项目', { atLineStart: true })), '[-] 项目');
+  assert.equal(shape(markdownInlineSegments('> 引用', { atLineStart: true })), '[> ]quote:引用');
+  // 行首的 * 是列表符号，不该被当成斜体起始
+  assert.equal(shape(markdownInlineSegments('* 项目', { atLineStart: true })), '[*] 项目');
+});
+
+test('未闭合的标记保持原样', () => {
+  assert.equal(shape(markdownInlineSegments('**没关', { atLineStart: false })), '**没关');
+  assert.equal(shape(markdownInlineSegments('只有一个 ` 号', { atLineStart: false })), '只有一个 ` 号');
+});
+
+test('回归：代码块内部的 Markdown 不解析', () => {
+  const text = '```\n# 这是代码不是标题\n**也不是粗体**\n```';
+  const fenceLines = computeFenceLines(text);
+  assert.deepEqual(fenceLines, [true, true, true, true], '围栏内（含围栏行本身）都要标出来');
+  const segments = markdownInlineSegments(text, { atLineStart: true, firstLine: 0, fenceLines });
+  assert.equal(markdownSegmentsToText(segments), text, '仍然逐字符保真');
+  assert.ok(
+    segments.every((s) => s.style === undefined && s.hidden !== true),
+    '代码块里不该出现任何样式或隐藏标记',
+  );
+});
+
+test('围栏状态跨行成对切换，不会一路吞到底', () => {
+  const lines = computeFenceLines('正文\n```\ncode\n```\n又回到正文');
+  assert.deepEqual(lines, [false, true, true, true, false]);
+});
+
+test('回归：样式一律不改字号（改了宽度就变，对齐立刻破功）', () => {
+  const css = CLIENT_SOURCE.slice(CLIENT_SOURCE.indexOf('.wcv-md-heading'));
+  const block = css.slice(0, css.indexOf('}'));
+  assert.match(block, /font-weight: 700/, '标题靠字重区分');
+  assert.ok(!/font-size/.test(block), '标题绝不能改字号');
+});
+
+test('回归：语法标记必须是 visibility 占位，不能 display 隐藏', () => {
+  assert.match(CLIENT_SOURCE, /\.wcv-mdHidden \{ visibility: hidden; \}/, '占位而不是移除');
+  // 富文本开启时文字画在镜像层上，textarea 只留光标
+  assert.match(CLIENT_SOURCE, /\.wcv-root--rich \.wcv-highlightInner \{ color: inherit; \}/, '镜像层要可见');
+  assert.match(CLIENT_SOURCE, /caret-color:/, 'textarea 要保留光标颜色');
+});
+
+test('回归：两层高度对不上要自动退回纯文本', () => {
+  // 宁可不好看，也不能让光标落在错的地方。
+  assert.match(CLIENT_SOURCE, /setRichSafe\(false\)/, '要有降级路径');
+  assert.match(CLIENT_SOURCE, /richtext:fallback/, '降级要上报');
+  assert.match(CLIENT_SOURCE, /text\.trim\(\) === ''/, '空文档不体检（否则误报）');
+});
+
+test('回归：正文要经 renderRichText 渲染，批注高亮与 Markdown 叠加', () => {
+  assert.match(CLIENT_SOURCE, /\.\.\.renderRichText\(text, annotations, suggestions\)/, '渲染入口要接上');
+  const fn = CLIENT_SOURCE.slice(CLIENT_SOURCE.indexOf('function renderRichText'));
+  const body = fn.slice(0, fn.indexOf('\n    }'));
+  assert.match(body, /buildHighlightSegments/, '先切批注区间，保证高亮位置精确');
+  assert.match(body, /markdownInlineSegments/, '再在片段内部解析 Markdown');
+});
+
+test('回归：相邻的同样式片段必须合并（否则长文会生成上千个 DOM 节点）', () => {
+  const segments = markdownInlineSegments('**这是一段比较长的粗体文字内容**', { atLineStart: false });
+  assert.equal(segments.length, 3, `应是 [标记][整段粗体][标记] 三段，实际 ${segments.length} 段`);
+  assert.equal(segments[1].text, '这是一段比较长的粗体文字内容');
+  assert.equal(segments[1].style, 'bold');
+  // 合并不得破坏保真
+  assert.equal(markdownSegmentsToText(segments), '**这是一段比较长的粗体文字内容**');
 });

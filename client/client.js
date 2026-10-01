@@ -227,6 +227,27 @@ window.__ModuleLoader__.load({
   border: 1px solid transparent; border-radius: 10px; }
 .wcv-highlightInner { white-space: pre-wrap; word-break: break-word; font-size: 15px; line-height: 1.85;
   padding: 16px 18px; color: transparent; }
+/* 富文本（Markdown 所见即所得）：文字画在镜像层上，textarea 只负责光标与选区。
+   两层共用同一套字体、字号、行高、内边距，且语法标记用 visibility 占位而非删除，
+   所以字符宽度与换行位置完全一致——这也是这套做法不必换编辑内核的前提。 */
+.wcv-root--rich .wcv-highlightInner { color: inherit; }
+.wcv-root--rich .wcv-editor { color: transparent; caret-color: var(--dsw-alias-label-primary, #1a1a1a); }
+.wcv-root--rich .wcv-editor::selection { background: rgba(77, 107, 254, 0.22); }
+/* 语法标记：不可见但**占位**，删掉它就会立刻错位。 */
+.wcv-tool--wide { min-width: 32px; padding: 0 8px; font-size: 11px; letter-spacing: 0.02em; }
+.wcv-tool--on { color: var(--dsw-alias-brand-primary, #4d6bfe);
+  background: var(--dsw-alias-bg-layer-2, rgba(77,107,254,0.12)); }
+.wcv-mdHidden { visibility: hidden; }
+.wcv-md-bold { font-weight: 700; }
+.wcv-md-italic { font-style: italic; }
+.wcv-md-strike { text-decoration: line-through; }
+.wcv-md-code { background: var(--dsw-alias-bg-layer-2, rgba(128,128,128,0.16)); border-radius: 3px;
+  color: var(--dsw-alias-brand-primary, #4d6bfe); }
+/* 标题只改颜色与字重，**不改字号**：字号一变宽度就变，光标立刻错位。 */
+.wcv-md-heading { font-weight: 700; color: var(--dsw-alias-brand-primary, #4d6bfe); }
+.wcv-md-quote { color: var(--dsw-alias-label-secondary, #6b6b6b); }
+.wcv-md-link { color: var(--dsw-alias-brand-primary, #4d6bfe); text-decoration: underline;
+  text-underline-offset: 2px; }
 .wcv-root--pane .wcv-highlightInner { font-size: 14px; padding: 12px 14px; }
 .wcv-mark { background: rgba(255, 176, 32, 0.28); border-radius: 3px; color: transparent; }
 .wcv-mark[data-status="resolved"] { background: rgba(26, 156, 83, 0.20); }
@@ -500,6 +521,19 @@ window.__ModuleLoader__.load({
        */
       const [floatPos, setFloatPos] = React.useState(null);
       const floatRef = React.useRef(null);
+      /**
+       * Markdown 所见即所得：文字画在镜像层上，textarea 退居幕后只管光标。
+       *
+       * 这套做法成立的前提是两层**逐字符对齐**。虽然语法标记用 visibility 占位
+       * 保证了宽度不变，但字体渲染总有万一（比如某个字体下加粗会略宽），
+       * 所以下面还有一道实测：两层的渲染高度对不上就自动退回纯文本，
+       * 宁可不漂亮，也不能让光标和文字错位。
+       */
+      const [richText, setRichText] = React.useState(true);
+      const [richSafe, setRichSafe] = React.useState(true);
+      const richOn = richText && richSafe;
+      /** 与 richSafe 同步的引用：体检里要读它又不想把它放进依赖（否则自触发循环）。 */
+      const richSafeRef = React.useRef(true);
       const [sets, setSets] = React.useState([]);
       const [exportSpec, setExportSpec] = React.useState('');
       const [exporting, setExporting] = React.useState(false);
@@ -759,6 +793,50 @@ window.__ModuleLoader__.load({
       }, [text]);
 
       /**
+       * 富文本对齐体检：两层的渲染高度必须一致。
+       *
+       * 高度一致才说明换行位置相同；一旦分叉，光标就会落在错的地方。
+       * 对不上时自动退回纯文本并上报——这是安全网，不是常态。
+       */
+      React.useLayoutEffect(() => {
+        if (!richOn) return;
+        // 正文还是空的就别急着下结论：此刻两层都只有内边距高，
+        // 拿这个去比会得出「差 600 多像素」的假警报（实测踩过）。
+        if (text.trim() === '') return;
+        const probe = () => {
+          const el = editorRef.current;
+          const layer = highlightRef.current;
+          if (el === null || layer === null) return;
+          const inner = layer.firstElementChild;
+          if (inner === null) return;
+          const delta = Math.abs(inner.scrollHeight - el.scrollHeight);
+          if (delta > 3) {
+            if (richSafeRef.current) {
+              richSafeRef.current = false;
+              setRichSafe(false);
+              report('richtext:fallback', {
+                delta,
+                editor: el.scrollHeight,
+                layer: inner.scrollHeight,
+                reason: '两层渲染高度不一致，已退回纯文本以保证光标准确',
+              });
+            }
+          } else if (!richSafeRef.current) {
+            // 之前降级过但现在已经对齐（比如字体加载完成），自动恢复。
+            richSafeRef.current = true;
+            setRichSafe(true);
+            report('richtext:restored', {});
+          }
+        };
+        // 再等一帧：字体与布局稳定后再量，避免量到中间态。
+        const id = typeof requestAnimationFrame === 'function' ? requestAnimationFrame(probe) : null;
+        if (id === null) probe();
+        return () => {
+          if (id !== null && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(id);
+        };
+      }, [text, richOn, annotations]);
+
+      /**
        * 界面自检：把「实际渲染出了什么」回报给宿主。
        *
        * 为什么需要：客户端跑在浏览器里，宿主看不见它。开发者（包括 AI 自己）可以
@@ -845,6 +923,15 @@ window.__ModuleLoader__.load({
             ],
             legacyCheckButton: all('.wcv-iconBtn').length,
             bannerClose: one('.wcv-bannerClose') !== null,
+            // 所见即所得：是否开启、两层渲染高度差（差 0 才说明逐行对齐）
+            richText: richOn,
+            richSafe,
+            richAlignDelta:
+              editor === null || one('.wcv-highlightInner') === null
+                ? -1
+                : Math.round(one('.wcv-highlightInner').scrollHeight - editor.scrollHeight),
+            mdHiddenMarks: all('.wcv-mdHidden').length,
+            mdStyledRuns: all('[class^="wcv-md-"]').length,
           });
 
           // 开发期交互自检：程序化地选中一段文字，确认浮动工具条真的出现。
@@ -1725,7 +1812,7 @@ window.__ModuleLoader__.load({
 
       return h(
         'div',
-        { className: `wcv-root wcv-root--${variant}`, ref: rootRef },
+        { className: `wcv-root wcv-root--${variant}${richOn ? ' wcv-root--rich' : ''}`, ref: rootRef },
         variant === 'pane'
           ? null
           : h(
@@ -2075,6 +2162,27 @@ window.__ModuleLoader__.load({
                       item[1],
                     ),
               ),
+                // 所见即所得开关。默认开着；关掉就是原来的纯源码视图，
+                // 想看语法标记、或者怀疑对齐有问题时可以切回来对照。
+                h('span', { key: 'mdSep', className: 'wcv-toolSep' }),
+                h(
+                  'button',
+                  {
+                    key: 'mdToggle',
+                    className: `wcv-tool wcv-tool--wide${richOn ? ' wcv-tool--on' : ''}`,
+                    title: richOn
+                      ? '当前：所见即所得（隐藏 Markdown 标记）。点一下切回源码视图'
+                      : '当前：源码视图。点一下切到所见即所得',
+                    onMouseDown: (event) => event.preventDefault(),
+                    onClick: () => {
+                      setRichText((on) => !on);
+                      // 用户手动切回富文本时，给对齐体检一次重新判断的机会。
+                      setRichSafe(true);
+                      report('richtext:toggle', { on: !richText });
+                    },
+                  },
+                  richOn ? 'MD' : '#',
+                ),
               ),
             ),
 
@@ -2091,21 +2199,7 @@ window.__ModuleLoader__.load({
                   h(
                     'div',
                     { className: 'wcv-highlightInner' },
-                    ...buildHighlightSegments(text, annotations, suggestions).map((segment, index) =>
-                      segment.mark === false
-                        ? h('span', { key: index }, segment.text)
-                        : h(
-                            'mark',
-                            {
-                              key: index,
-                              className: 'wcv-mark',
-                              'data-mark': segment.mark,
-                              'data-status': segment.status,
-                              'data-kind': segment.kind,
-                            },
-                            segment.text,
-                          ),
-                    ),
+                    ...renderRichText(text, annotations, suggestions),
                   ),
                 ),
                 // 空白文档 + 未指定类型时，先让用户选写作模式（新会话的入口体验）
@@ -3089,6 +3183,233 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * 行内 Markdown 的语法标记。
+     *
+     * 只支持写作里真正用得到的几种。刻意**不支持** `_强调_`：中文稿件里下划线
+     * 更多出现在文件名与变量名（如 my_var）里，支持它会大面积误判。
+     */
+    const MD_INLINE_RULES = [
+      { open: '**', style: 'bold' },
+      { open: '~~', style: 'strike' },
+      { open: '`', style: 'code' },
+      { open: '*', style: 'italic' },
+    ];
+
+    /** 在已确定样式的基础上继续扫描行内标记。 */
+    function scanMarkdownInline(text, style, out, depth) {
+      // 递归深度兜底：畸形输入（比如一连串星号）不能把界面拖死。
+      if (depth > 6) {
+        out.push({ text, style });
+        return;
+      }
+      let i = 0;
+      while (i < text.length) {
+        let matched = false;
+        for (const rule of MD_INLINE_RULES) {
+          if (!text.startsWith(rule.open, i)) continue;
+          const closeAt = text.indexOf(rule.open, i + rule.open.length);
+          if (closeAt <= i + rule.open.length) continue;
+          const inner = text.slice(i + rule.open.length, closeAt);
+          // 跨行的标记不当强调处理（用户可能只是在换行处打了个星号）。
+          if (inner.includes('\n')) continue;
+          out.push({ text: rule.open, hidden: true });
+          scanMarkdownInline(inner, rule.style, out, depth + 1);
+          out.push({ text: rule.open, hidden: true });
+          i = closeAt + rule.open.length;
+          matched = true;
+          break;
+        }
+        if (matched) continue;
+
+        // 链接：只显示文字，方括号与地址部分占位隐藏。
+        const link = /^\[([^\]\n]+)\]\(([^)\n]*)\)/.exec(text.slice(i));
+        if (link !== null) {
+          out.push({ text: '[', hidden: true });
+          scanMarkdownInline(link[1], 'link', out, depth + 1);
+          out.push({ text: `](${link[2]})`, hidden: true });
+          i += link[0].length;
+          continue;
+        }
+
+        out.push({ text: text[i], style });
+        i += 1;
+      }
+    }
+
+    /**
+     * 把一段 Markdown 解析成可直接渲染的片段。
+     *
+     * **核心约束：一个字符都不能删。** 语法标记不是被去掉，而是标记为 hidden，
+     * 交给 CSS 用 `visibility: hidden` 占位——占位会保留宽度，于是渲染层与
+     * textarea 的字符宽度、换行位置、光标坐标三者完全一致，编辑才不会错位。
+     * 这也是本方案不改变字号的原因：字号一变，宽度就变，对齐立刻破功。
+     *
+     * @param text - 片段文本。
+     * @param options.atLineStart - 该片段是否从行首开始（行级标记只在行首生效）。
+     * @returns [{ text, style, hidden }]，拼起来与入参逐字符相等。
+     */
+    function markdownInlineSegments(text, options) {
+      const out = [];
+      const opts = options !== null && typeof options === 'object' ? options : {};
+      const fenceLines = Array.isArray(opts.fenceLines) ? opts.fenceLines : null;
+      let lineNo = typeof opts.firstLine === 'number' ? opts.firstLine : 0;
+      let lineStart = opts.atLineStart === true;
+      let i = 0;
+      while (i <= text.length) {
+        const nl = text.indexOf('\n', i);
+        const end = nl === -1 ? text.length : nl;
+        let line = text.slice(i, end);
+        let style = '';
+        // 代码块内部原样保留：段内的 # 不该变成标题，** 也不该变成粗体。
+        const inFence = fenceLines !== null && fenceLines[lineNo] === true;
+
+        if (inFence) {
+          out.push({ text: line });
+          if (nl === -1) break;
+          out.push({ text: '\n' });
+          i = nl + 1;
+          lineStart = true;
+          lineNo += 1;
+          continue;
+        }
+
+        if (lineStart) {
+          const heading = /^(#{1,6}\s+)/.exec(line);
+          if (heading !== null) {
+            out.push({ text: heading[1], hidden: true });
+            line = line.slice(heading[0].length);
+            style = 'heading';
+          } else {
+            const quote = /^(>\s?)/.exec(line);
+            if (quote !== null) {
+              out.push({ text: quote[1], hidden: true });
+              line = line.slice(quote[0].length);
+              style = 'quote';
+            }
+            // 无序列表：短横/星号/加号隐藏，其后的空格保留可见，于是看起来是缩进。
+            const bullet = /^([-*+]\s+)/.exec(line);
+            if (bullet !== null) {
+              out.push({ text: bullet[1][0], hidden: true });
+              out.push({ text: bullet[1].slice(1) });
+              line = line.slice(bullet[0].length);
+            }
+          }
+        }
+
+        scanMarkdownInline(line, style, out, 0);
+        if (nl === -1) break;
+        out.push({ text: '\n' });
+        i = nl + 1;
+        lineStart = true;
+        lineNo += 1;
+      }
+      return coalesceMarkdownSegments(out);
+    }
+
+    /**
+     * 标出哪些行位于 ``` 围栏之内。
+     *
+     * 需要整篇文本来判断（围栏是跨行的），所以在渲染前算一次。
+     *
+     * @param text - 正文。
+     * @returns 与行数等长的布尔数组。
+     */
+    function computeFenceLines(text) {
+      const lines = String(text ?? '').split('\n');
+      const inside = new Array(lines.length).fill(false);
+      let fence = false;
+      for (let index = 0; index < lines.length; index += 1) {
+        if (/^\s*```/.test(lines[index])) {
+          inside[index] = true;
+          fence = !fence;
+          continue;
+        }
+        inside[index] = fence;
+      }
+      return inside;
+    }
+
+    /**
+     * 合并相邻的同样式片段。
+     *
+     * 扫描器是逐字符往外吐的，这里不合并的话，一篇 800 字的稿子会生成上千个
+     * span 节点——渲染开销和 diff 代价都白给。合并只重组片段、不动字符，
+     * 保真契约依然成立。
+     *
+     * @param segments - 原始片段。
+     * @returns 合并后的片段。
+     */
+    function coalesceMarkdownSegments(segments) {
+      const merged = [];
+      for (const segment of segments) {
+        const last = merged[merged.length - 1];
+        const sameShape =
+          last !== undefined &&
+          (last.hidden === true) === (segment.hidden === true) &&
+          (last.style ?? '') === (segment.style ?? '');
+        if (sameShape) last.text += segment.text;
+        else merged.push({ text: segment.text, style: segment.style, hidden: segment.hidden });
+      }
+      return merged;
+    }
+
+    /** 把片段拼回纯文本——用于自检：必须与输入逐字符相同。 */
+    function markdownSegmentsToText(segments) {
+      return segments.map((segment) => segment.text).join('');
+    }
+
+    /**
+     * 渲染正文：批注高亮 + Markdown 行内样式。
+     *
+     * 两层是叠加关系：先按字符区间切出批注片段（保证高亮位置精确），
+     * 再在**每个片段内部**做 Markdown 解析。这样外层偏移量不受影响，
+     * 批注色块仍能严丝合缝地贴住原文。
+     *
+     * @param text - 正文。
+     * @param annotations - 批注列表。
+     * @param suggestions - 待处理建议列表。
+     * @returns 可渲染的子元素数组。
+     */
+    function renderRichText(text, annotations, suggestions) {
+      const fenceLines = computeFenceLines(text);
+      let cursor = 0;
+      let lineNo = 0;
+      return buildHighlightSegments(text, annotations, suggestions).map((segment, index) => {
+        // 行级标记只在行首生效，所以要先知道这个片段是不是从行首开始的。
+        const atLineStart = cursor === 0 || text[cursor - 1] === '\n';
+        const firstLine = lineNo;
+        cursor += segment.text.length;
+        lineNo += (segment.text.match(/\n/g) ?? []).length;
+        const children = markdownInlineSegments(segment.text, {
+          atLineStart,
+          firstLine,
+          fenceLines,
+        }).map((piece, pieceIndex) => {
+          const className =
+            piece.hidden === true ? 'wcv-mdHidden' : piece.style ? `wcv-md-${piece.style}` : undefined;
+          return h(
+            'span',
+            className === undefined ? { key: pieceIndex } : { key: pieceIndex, className },
+            piece.text,
+          );
+        });
+        return segment.mark === false
+          ? h('span', { key: index }, ...children)
+          : h(
+              'mark',
+              {
+                key: index,
+                className: 'wcv-mark',
+                'data-mark': segment.mark,
+                'data-status': segment.status,
+                'data-kind': segment.kind,
+              },
+              ...children,
+            );
+      });
+    }
+
+    /**
      * 行级差异（LCS）。用于版本对比：把「某个历史版本」与「当前版本」逐行对照。
      *
      * 文本量不大时用经典动态规划最直观；超过上限就退化为整体替换，
@@ -3729,6 +4050,9 @@ window.__ModuleLoader__.load({
       modifiersOf,
       readAgentPresetId,
       clampFloatPosition,
+      markdownInlineSegments,
+      markdownSegmentsToText,
+      computeFenceLines,
     };
     return exports;
   },
