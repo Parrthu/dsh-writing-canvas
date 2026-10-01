@@ -975,3 +975,51 @@ test('回归：follow 默认关闭，必须是显式传 true 才跟随', () => {
 test('回归：接受建议时跟随（用户主动要看改写结果）', () => {
   assert.match(CLIENT_SOURCE, /revealContent\(data\.latest\.content, \{ follow: true \}\)/, '主动操作要看结果');
 });
+
+// ---- 2026-10-01 事故：点「扩写」整个画布白屏 ----------------------------------
+//
+// floatAnchor 在输入态下是每次渲染新建的对象（{ top: aiAction.top, left: ... }），
+// 把它放进 effect 依赖 → effect 每次渲染都执行 → setFloatPos 每次传新对象
+// → 重渲染 → 死循环 → 整个右栏空白。
+// 只有 AI 按钮会炸，因为只有它会进入输入态（非输入态时 floatAnchor 就是 selection，
+// 引用是稳定的），所以这个坑藏得很深。
+
+test('回归：浮动工具条定位 effect 的依赖必须是原始值', () => {
+  assert.match(
+    CLIENT_SOURCE,
+    /\}, \[floatAnchor\?\.left, floatAnchor\?\.top, aiAction\]\);/,
+    '依赖必须用 left/top 原始值',
+  );
+  assert.ok(
+    !/\}, \[floatAnchor, aiAction\]\)/.test(CLIENT_SOURCE),
+    '绝不能把每次新建的对象放进依赖——那会死循环白屏',
+  );
+});
+
+test('回归：定位值没变时不得 setState', () => {
+  assert.match(
+    CLIENT_SOURCE,
+    /prev !== null && prev\.left === next\.left && prev\.top === next\.top \? prev : next/,
+    '值相同要复用旧对象，否则每次渲染都触发一轮重渲染',
+  );
+});
+
+test('回归：AI 按钮进入输入态不得让渲染进入自我循环', () => {
+  // 结构性断言：beginAiAction 产出的对象若不是引用稳定的，就必须只出现在原始值依赖里。
+  const fn = CLIENT_SOURCE.slice(CLIENT_SOURCE.indexOf('const beginAiAction'));
+  const body = fn.slice(0, fn.indexOf('\n      };'));
+  assert.match(body, /setAiAction\(\{/, 'AI 动作带着快照进 state');
+  // 全文件不得再有「对象依赖 + setState」的组合
+  assert.ok(
+    !/\[floatAnchor[^\]?]*, aiAction\]/.test(CLIENT_SOURCE),
+    '依赖里不得出现裸的 floatAnchor',
+  );
+});
+
+test('回归：定位效果要有渲染风暴熔断，不能再以白屏收场', () => {
+  // 上次事故的代价是整个右栏消失，用户除了刷新别无他法。
+  // 万一将来再有同类循环，至少要能自己刹住。
+  assert.match(CLIENT_SOURCE, /floatBurstRef/, '要有每秒调用计数');
+  assert.match(CLIENT_SOURCE, /count > 50/, '超过阈值就停手');
+  assert.match(CLIENT_SOURCE, /float:storm/, '熔断要上报，便于事后定位');
+});

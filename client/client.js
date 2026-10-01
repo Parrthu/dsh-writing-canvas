@@ -542,6 +542,8 @@ window.__ModuleLoader__.load({
       const [followPaused, setFollowPaused] = React.useState(false);
       /** 当前这次滚动是不是代码自己发起的。 */
       const programmaticScrollRef = React.useRef(false);
+      /** 定位 effect 的每秒调用计数，用于熔断渲染风暴。 */
+      const floatBurstRef = React.useRef({ at: 0, count: 0 });
       /** 与 richSafe 同步的引用：体检里要读它又不想把它放进依赖（否则自触发循环）。 */
       const richSafeRef = React.useRef(true);
       const [sets, setSets] = React.useState([]);
@@ -1225,17 +1227,35 @@ window.__ModuleLoader__.load({
         const wrap = editorRef.current === null ? null : editorRef.current.parentElement;
         const bar = floatRef.current;
         if (wrap === null || bar === null) return;
-        setFloatPos(
-          clampFloatPosition({
-            anchorLeft: floatAnchor.left,
-            anchorTop: floatAnchor.top,
-            barWidth: bar.offsetWidth,
-            barHeight: bar.offsetHeight,
-            wrapWidth: wrap.clientWidth,
-            wrapHeight: wrap.clientHeight,
-          }),
+        // 渲染风暴熔断：定位逻辑万一再次陷入「setState → 重渲染 → effect 再跑」的
+        // 循环，界面会直接白屏且用户毫无办法。这里按秒计数，超限就放弃精确定位，
+        // 让工具条退回左上角——难看总好过整块画布消失。
+        const now = Date.now();
+        if (now - floatBurstRef.current.at > 1000) {
+          floatBurstRef.current = { at: now, count: 0 };
+        }
+        floatBurstRef.current.count += 1;
+        if (floatBurstRef.current.count > 50) {
+          if (floatBurstRef.current.count === 51) report('float:storm', { perSecond: 51 });
+          return;
+        }
+
+        const next = clampFloatPosition({
+          anchorLeft: floatAnchor.left,
+          anchorTop: floatAnchor.top,
+          barWidth: bar.offsetWidth,
+          barHeight: bar.offsetHeight,
+          wrapWidth: wrap.clientWidth,
+          wrapHeight: wrap.clientHeight,
+        });
+        // 值没变就不要 setState：否则每次渲染都触发一次重渲染，直接死循环。
+        setFloatPos((prev) =>
+          prev !== null && prev.left === next.left && prev.top === next.top ? prev : next,
         );
-      }, [floatAnchor, aiAction]);
+        // 依赖必须用**原始值**。输入态下 floatAnchor 是每次渲染新建的对象
+        // （{ top: aiAction.top, left: aiAction.left }），把它放进依赖会让 effect
+        // 每次渲染都执行，配合 setState 就是无限循环——点一下「扩写」直接白屏。
+      }, [floatAnchor?.left, floatAnchor?.top, aiAction]);
 
       /** 开始一个 AI 选区动作：快照选区，之后不再依赖实时 selection。 */
       const beginAiAction = (kind) => {
