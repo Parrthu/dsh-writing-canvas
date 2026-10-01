@@ -198,6 +198,8 @@ window.__ModuleLoader__.load({
 
 /* ---- 选区浮动工具条 ---- */
 .wcv-float { position: absolute; z-index: 40; display: flex; align-items: center; gap: 2px;
+  /* 兜底：容器极窄时宁可换行也不要溢出到正文上。 */
+  max-width: calc(100% - 8px); flex-wrap: wrap;
   padding: 4px 5px; border-radius: 9px; box-shadow: 0 6px 22px rgba(0,0,0,0.16);
   background: var(--dsw-alias-bg-overlay, #fff); color: var(--dsw-alias-label-primary, #1a1a1a);
   border: 1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.35)); }
@@ -489,6 +491,15 @@ window.__ModuleLoader__.load({
       const [aiAction, setAiAction] = React.useState(null);
       /** AI 动作输入框里的文字。 */
       const [aiDraft, setAiDraft] = React.useState('');
+      /**
+       * 浮动工具条的实际落点。
+       *
+       * 不能直接拿选区坐标当 left：选区靠右时工具条会越出容器、反过来压住
+       * 用户刚选中的那行字。所以先渲染再量宽度，把它夹在容器内。
+       * 量出来之前先隐藏，避免闪一下再跳位。
+       */
+      const [floatPos, setFloatPos] = React.useState(null);
+      const floatRef = React.useRef(null);
       const [sets, setSets] = React.useState([]);
       const [exportSpec, setExportSpec] = React.useState('');
       const [exporting, setExporting] = React.useState(false);
@@ -1066,6 +1077,32 @@ window.__ModuleLoader__.load({
        * 所以 AI 动作自带选区快照，这里优先用它。
        */
       const floatAnchor = aiAction !== null ? { top: aiAction.top, left: aiAction.left } : selection;
+
+      /**
+       * 把浮动工具条夹进编辑器容器。
+       *
+       * 用 useLayoutEffect：必须在浏览器绘制前定好位，否则会先闪在错误位置。
+       * 依赖里带上 aiAction 与选区，因为两者都会改变工具条的宽度（输入态更宽）。
+       */
+      React.useLayoutEffect(() => {
+        if (floatAnchor === null) {
+          setFloatPos(null);
+          return;
+        }
+        const wrap = editorRef.current === null ? null : editorRef.current.parentElement;
+        const bar = floatRef.current;
+        if (wrap === null || bar === null) return;
+        setFloatPos(
+          clampFloatPosition({
+            anchorLeft: floatAnchor.left,
+            anchorTop: floatAnchor.top,
+            barWidth: bar.offsetWidth,
+            barHeight: bar.offsetHeight,
+            wrapWidth: wrap.clientWidth,
+            wrapHeight: wrap.clientHeight,
+          }),
+        );
+      }, [floatAnchor, aiAction]);
 
       /** 开始一个 AI 选区动作：快照选区，之后不再依赖实时 selection。 */
       const beginAiAction = (kind) => {
@@ -2162,11 +2199,12 @@ window.__ModuleLoader__.load({
                   ? h(
                       'div',
                       {
+                        ref: floatRef,
                         className: `wcv-float${aiAction !== null ? ' wcv-float--input' : ''}`,
-                        style: {
-                          top: `${Math.max(2, floatAnchor.top - 42)}px`,
-                          left: `${Math.max(4, floatAnchor.left)}px`,
-                        },
+                        style:
+                          floatPos === null
+                            ? { visibility: 'hidden', top: 0, left: 0 }
+                            : { top: `${floatPos.top}px`, left: `${floatPos.left}px` },
                         // 输入态**不能** preventDefault：它会阻止输入框获得焦点，
                         // 结果就是输入框摆在眼前却打不了字。
                         onMouseDown: aiAction === null ? (event) => event.preventDefault() : undefined,
@@ -3208,6 +3246,39 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * 算出浮动工具条该落在哪里。
+     *
+     * 抽成纯函数是为了能真正验证边界——「选中靠右的文字时工具栏压住它」这类问题
+     * 只在特定坐标下出现，看代码看不出，必须拿数字算。
+     *
+     * @param options.anchorLeft - 选区左边缘（相对容器）。
+     * @param options.anchorTop - 选区上边缘（相对容器）。
+     * @param options.barWidth - 工具条实际宽度。
+     * @param options.barHeight - 工具条实际高度。
+     * @param options.wrapWidth - 容器宽度。
+     * @param options.wrapHeight - 容器高度。
+     * @returns { left, top } 均已夹进容器。
+     */
+    function clampFloatPosition(options) {
+      const gap = 4;
+      const lineHeight = 30;
+      const { anchorLeft, anchorTop, barWidth, barHeight, wrapWidth, wrapHeight } = options;
+
+      // 横向：选区靠右时不能让它越出容器，否则工具条会反过来压住刚选中的文字。
+      const maxLeft = Math.max(gap, wrapWidth - barWidth - gap);
+      const left = Math.max(gap, Math.min(anchorLeft, maxLeft));
+
+      // 纵向：默认浮在选区上方；上方放不下（例如选中的是第一行）就翻到下方，
+      // 否则会把正在编辑的那一行盖住。两边都放不下时贴顶。
+      const above = anchorTop - barHeight - 8;
+      const below = anchorTop + lineHeight;
+      let top = above >= 2 ? above : below;
+      if (top + barHeight > wrapHeight - 2) top = Math.max(2, above);
+
+      return { left, top };
+    }
+
+    /**
      * 读一个会话的 agent preset id。
      *
      * 只有读到 `writing` 才允许自动调出画布，所以这个函数决定了两件事：
@@ -3650,7 +3721,15 @@ window.__ModuleLoader__.load({
     exports.inject = inject;
     // 纯函数暴露给单元测试。它们不依赖 DOM，也不产生副作用，
     // 但内联在 bundle 里无法被 import，所以留这个测试入口。
-    exports.__internals = { transformSelection, buildHighlightSegments, diffLines, formatKeys, modifiersOf, readAgentPresetId };
+    exports.__internals = {
+      transformSelection,
+      buildHighlightSegments,
+      diffLines,
+      formatKeys,
+      modifiersOf,
+      readAgentPresetId,
+      clampFloatPosition,
+    };
     return exports;
   },
 });

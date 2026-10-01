@@ -43,7 +43,8 @@ async function loadClientExports() {
 }
 
 const client = await loadClientExports();
-const { transformSelection, buildHighlightSegments, formatKeys, modifiersOf, readAgentPresetId } = client.__internals;
+const { transformSelection, buildHighlightSegments, formatKeys, modifiersOf, readAgentPresetId, clampFloatPosition } =
+  client.__internals;
 
 test('客户端 bundle 以宿主契约的形态导出', () => {
   assert.equal(typeof client.apply, 'function');
@@ -678,4 +679,62 @@ test('回归：桥必须挂在会话级槽位上并从注入里取输入动作',
     /props\?\.inputActions \?\? props\?\.keyboard\?\.actions/,
     '输入动作可能经 inputActions 或 keyboard.actions 注入，两条都要认',
   );
+});
+
+// ---- 浮动工具条定位：选中靠右的文字时不得压住它 ------------------------------
+
+const geo = { barWidth: 420, barHeight: 34, wrapWidth: 549, wrapHeight: 675 };
+
+test('定位：常规情况贴在选区左上方', () => {
+  const pos = clampFloatPosition({ ...geo, anchorLeft: 100, anchorTop: 300 });
+  assert.equal(pos.left, 100);
+  assert.equal(pos.top, 300 - 34 - 8);
+});
+
+test('回归：选区靠右时工具条要被夹进容器，不能越界压住文字', () => {
+  // 用户报的正是这一条：文字在最右边，选中后工具条盖住了它。
+  const pos = clampFloatPosition({ ...geo, anchorLeft: 540, anchorTop: 300 });
+  assert.ok(pos.left + geo.barWidth <= geo.wrapWidth, `左边界越界：${pos.left} + ${geo.barWidth} > ${geo.wrapWidth}`);
+  assert.equal(pos.left, geo.wrapWidth - geo.barWidth - 4);
+});
+
+test('定位：选区贴左边界时留出 gap，不贴死', () => {
+  assert.equal(clampFloatPosition({ ...geo, anchorLeft: 0, anchorTop: 300 }).left, 4);
+  assert.equal(clampFloatPosition({ ...geo, anchorLeft: -50, anchorTop: 300 }).left, 4);
+});
+
+test('回归：选中的是第一行时工具条翻到下方，不盖住那一行', () => {
+  // 上方放不下（top - 高度 - 8 < 2）就应当翻到选区下面。
+  const pos = clampFloatPosition({ ...geo, anchorLeft: 100, anchorTop: 10 });
+  assert.ok(pos.top >= 10, `应当翻到选区下方，实际 top=${pos.top}`);
+  assert.equal(pos.top, 10 + 30);
+});
+
+test('定位：容器太低时贴顶，不把工具条挤出可视区', () => {
+  const pos = clampFloatPosition({ barWidth: 200, barHeight: 34, wrapWidth: 549, wrapHeight: 80, anchorLeft: 10, anchorTop: 200 });
+  assert.ok(pos.top >= 2, '不得为负');
+});
+
+test('定位：容器比工具条还窄时退化为贴左，不产生负坐标', () => {
+  const pos = clampFloatPosition({ barWidth: 600, barHeight: 34, wrapWidth: 400, wrapHeight: 500, anchorLeft: 300, anchorTop: 200 });
+  assert.equal(pos.left, 4, '无处可放时贴左，配合 CSS max-width 兜底');
+});
+
+test('回归：定位必须在绘制前完成，且量出来之前先隐藏（避免闪跳）', () => {
+  // 窗口给宽一点：断言的是「同一个 effect 里先量后定位」这个结构，
+  // 而不是两段代码之间恰好隔多少字符（写紧过一次，误报）。
+  assert.match(
+    CLIENT_SOURCE,
+    /React\.useLayoutEffect\(\(\) => \{[\s\S]{0,900}?clampFloatPosition/,
+    '要用 useLayoutEffect 在绘制前量并定位',
+  );
+  assert.match(CLIENT_SOURCE, /visibility: 'hidden'/, '未定位前先隐藏');
+  assert.match(CLIENT_SOURCE, /ref: floatRef/, '要挂 ref 才能量宽度');
+});
+
+test('回归：工具条自身要有 max-width 兜底，极窄容器下不溢出', () => {
+  const css = CLIENT_SOURCE.slice(CLIENT_SOURCE.indexOf('.wcv-float {'));
+  const block = css.slice(0, css.indexOf('}'));
+  assert.match(block, /max-width: calc\(100% - 8px\)/, '要有 max-width 兜底');
+  assert.match(block, /flex-wrap: wrap/, '放不下时换行而不是溢出');
 });
