@@ -25,9 +25,19 @@
 
 ## 二、安装（最终用户）
 
+本插件目前以 **GitHub Release 的包体**分发，尚未发布到 npm registry，
+所以下面第一条命令暂时走不通——用后两条之一。
+
 ```bash
-dsh plugin --profile <profile> add dsh-writing-canvas
-# 或本地目录：dsh plugin --profile <profile> add file:/path/to/写作插件
+# ① 从 Release 下载 tgz 后安装（推荐）
+gh release download v0.1.0 --repo Parrthu/dsh-writing-canvas --pattern '*.tgz'
+dsh plugin --profile <profile> add file:./dsh-writing-canvas-0.1.0.tgz
+
+# ② 直接用源码目录（开发者常用，改源码立即生效）
+dsh plugin --profile <profile> add file:/path/to/写作插件
+
+# ③ registry（等发布到 npm 之后可用，当前不可用）
+# dsh plugin --profile <profile> add dsh-writing-canvas
 ```
 
 **安装后需要重启一次 DeepSeek Harness**——这是 DSH 插件的标准流程：宿主只在启动时读取
