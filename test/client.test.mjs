@@ -871,3 +871,60 @@ test('回归：相邻的同样式片段必须合并（否则长文会生成上�
   // 合并不得破坏保真
   assert.equal(markdownSegmentsToText(segments), '**这是一段比较长的粗体文字内容**');
 });
+
+// ---- 2026-10-01 用户反馈：「它一直往底部去，好诡异」--------------------------
+//
+// 起因是「撰写中焦点跟随」每个 tick 都无条件把视野拉到底：用户想回看前文，
+// 会被一直拽回底部，而且界面上没有任何说明。改法是——用户一往上滚就停手。
+
+test('回归：用户手动滚动后必须暂停焦点跟随', () => {
+  const fn = CLIENT_SOURCE.slice(CLIENT_SOURCE.indexOf('const followWritingTail'));
+  const body = fn.slice(0, fn.indexOf('\n      };'));
+  assert.match(body, /if \(followPausedRef\.current\) return;/, '暂停时不得再滚动');
+  assert.ok(
+    body.indexOf('followPausedRef.current') < body.indexOf('scrollEditorToEnd()'),
+    '判断必须发生在滚动之前',
+  );
+});
+
+test('回归：区分「程序滚动」与「用户滚动」，否则会自我打断', () => {
+  // 跟随本身会触发 scroll 事件；若不区分，它会被自己判成「用户滚了」而停掉。
+  assert.match(CLIENT_SOURCE, /programmaticScrollRef/, '要有程序滚动标记');
+  const scroll = CLIENT_SOURCE.slice(CLIENT_SOURCE.indexOf('const scrollEditorToEnd'));
+  const body = scroll.slice(0, scroll.indexOf('\n      };'));
+  assert.match(body, /programmaticScrollRef\.current = true/, '程序滚动要先打标');
+  assert.match(
+    CLIENT_SOURCE,
+    /if \(!programmaticScrollRef\.current\)/,
+    'onScroll 里只在非程序滚动时才改跟随状态',
+  );
+});
+
+test('回归：滚回底部附近要自动恢复跟随', () => {
+  assert.match(CLIENT_SOURCE, /scrollHeight - el\.scrollTop - el\.clientHeight < 24/, '按距底部距离判定');
+  assert.match(CLIENT_SOURCE, /followPausedRef\.current = paused/, '状态要跟着更新');
+});
+
+test('回归：新一次撰写要重置跟随状态', () => {
+  const fn = CLIENT_SOURCE.slice(CLIENT_SOURCE.indexOf('const revealContent'));
+  const body = fn.slice(0, fn.indexOf('stopReveal),'));
+  assert.match(body, /followPausedRef\.current = false/, '新一轮重新跟随，否则会一直停着');
+});
+
+test('回归：暂停跟随要给用户一条可见的回到末尾入口', () => {
+  // 视图不动却没有任何说明，用户会以为卡住了——这正是「诡异」的来源。
+  assert.match(CLIENT_SOURCE, /wcv-followBack/, '要有回到末尾的按钮');
+  assert.match(CLIENT_SOURCE, /已暂停跟随/, '要明说发生了什么');
+  // 从**使用处**开始找：CSS 里也有同名类，先匹配到样式块就什么都验不到。
+  const at = CLIENT_SOURCE.indexOf("className: 'wcv-followBack'");
+  assert.ok(at > 0, '按钮要被真的渲染出来');
+  assert.match(CLIENT_SOURCE.slice(at, at + 600), /scrollEditorToEnd\(\)/, '点了要真的回到底部');
+});
+
+test('回归：滚动状态更新要防抖，不能每次 scroll 都 setState', () => {
+  assert.match(
+    CLIENT_SOURCE,
+    /if \(followPausedRef\.current !== paused\) \{/,
+    '只在状态真的变化时才 setState',
+  );
+});

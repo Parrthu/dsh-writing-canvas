@@ -235,6 +235,9 @@ window.__ModuleLoader__.load({
 .wcv-root--rich .wcv-editor::selection { background: rgba(77, 107, 254, 0.22); }
 /* 语法标记：不可见但**占位**，删掉它就会立刻错位。 */
 .wcv-tool--wide { min-width: 32px; padding: 0 8px; font-size: 11px; letter-spacing: 0.02em; }
+.wcv-followBack { font: inherit; font-size: 11px; margin-left: 8px; padding: 1px 7px; border-radius: 999px;
+  cursor: pointer; border: 1px solid currentColor; background: transparent; color: inherit; opacity: 0.85; }
+.wcv-followBack:hover { opacity: 1; }
 .wcv-tool--on { color: var(--dsw-alias-brand-primary, #4d6bfe);
   background: var(--dsw-alias-bg-layer-2, rgba(77,107,254,0.12)); }
 .wcv-mdHidden { visibility: hidden; }
@@ -534,6 +537,11 @@ window.__ModuleLoader__.load({
       const [richText, setRichText] = React.useState(true);
       const [richSafe, setRichSafe] = React.useState(true);
       const richOn = richText && richSafe;
+      /** 用户是否手动往上滚过（滚过就暂停「撰写中焦点跟随」）。 */
+      const followPausedRef = React.useRef(false);
+      const [followPaused, setFollowPaused] = React.useState(false);
+      /** 当前这次滚动是不是代码自己发起的。 */
+      const programmaticScrollRef = React.useRef(false);
       /** 与 richSafe 同步的引用：体检里要读它又不想把它放进依赖（否则自触发循环）。 */
       const richSafeRef = React.useRef(true);
       const [sets, setSets] = React.useState([]);
@@ -716,7 +724,14 @@ window.__ModuleLoader__.load({
       const scrollEditorToEnd = () => {
         const el = editorRef.current;
         if (el !== null && el !== undefined) {
+          // 标记为程序滚动，避免下面 onScroll 把它误判成「用户自己滚了」。
+          programmaticScrollRef.current = true;
           el.scrollTop = el.scrollHeight;
+          if (typeof requestAnimationFrame === 'function') {
+            requestAnimationFrame(() => {
+              programmaticScrollRef.current = false;
+            });
+          }
         }
         const layer = highlightRef.current;
         if (layer !== null && layer !== undefined && el !== null && el !== undefined) {
@@ -724,8 +739,16 @@ window.__ModuleLoader__.load({
         }
       };
 
-      /** 用 rAF 兜一次：setState 之后 DOM 高度才更新，直接读 scrollHeight 会拿到旧值。 */
+      /**
+       * 撰写中把视野拉到最新写出的那一段。
+       *
+       * **用户一旦自己往上翻，就必须停手**。原先每个 tick 都无条件拉到底，
+       * 结果是想回看前文时会被一直拽回底部，既没法读也说不清为什么——
+       * 用户反馈的「它一直往底部去，好诡异」说的就是这个。
+       * 滚回底部附近即自动恢复跟随。
+       */
       const followWritingTail = () => {
+        if (followPausedRef.current) return;
         scrollEditorToEnd();
         if (typeof requestAnimationFrame === 'function') {
           requestAnimationFrame(() => scrollEditorToEnd());
@@ -764,6 +787,9 @@ window.__ModuleLoader__.load({
           const previous = textRef.current;
           stopReveal();
           if (typeof next !== 'string') return;
+          // 新一次撰写/回放重新开始跟随：上一轮里用户可能手动滚动过。
+          followPausedRef.current = false;
+          setFollowPaused(false);
           if (previous !== '' && next.startsWith(previous) && next.length > previous.length) {
             let cursor = previous.length;
             const step = Math.max(1, Math.ceil((next.length - previous.length) / 80));
@@ -2122,7 +2148,30 @@ window.__ModuleLoader__.load({
               // 第一行右端：撰写中指示 + 状态徽标（pane 没有抬头，状态落在这里）。
               h('span', { className: 'wcv-toolSpacer' }),
               writing.active
-                ? h('span', { className: 'wcv-writing' }, h('span', { className: 'wcv-writingDot' }), '撰写中…')
+                ? h(
+                    'span',
+                    { className: 'wcv-writing' },
+                    h('span', { className: 'wcv-writingDot' }),
+                    '撰写中…',
+                    // 用户往上翻过就明说「不跟了」，并给一个回到末尾的入口；
+                    // 否则视图不动会让人以为写卡住了。
+                    followPaused
+                      ? h(
+                          'button',
+                          {
+                            className: 'wcv-followBack',
+                            title: '回到最新写出的位置，继续跟随',
+                            onMouseDown: (event) => event.preventDefault(),
+                            onClick: () => {
+                              followPausedRef.current = false;
+                              setFollowPaused(false);
+                              scrollEditorToEnd();
+                            },
+                          },
+                          '已暂停跟随 · 回到末尾',
+                        )
+                      : null,
+                  )
                 : null,
               pill,
               ),
@@ -2274,6 +2323,16 @@ window.__ModuleLoader__.load({
                   onScroll: (event) => {
                     const layer = highlightRef.current;
                     if (layer !== null) layer.scrollTop = event.target.scrollTop;
+                    // 用户自己滚的才改跟随状态；程序滚动不算，否则会自我打断。
+                    if (!programmaticScrollRef.current) {
+                      const el = event.target;
+                      const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+                      const paused = !nearBottom;
+                      if (followPausedRef.current !== paused) {
+                        followPausedRef.current = paused;
+                        setFollowPaused(paused);
+                      }
+                    }
                     // 滚动条是随内容出现的，滚动时再量一次最稳。
                     syncHighlightMetrics();
                   },
@@ -3517,6 +3576,8 @@ window.__ModuleLoader__.load({
     /** 生成「输入框桥」的无渲染组件。 */
     function makeComposerBridge() {
       return function ComposerBridge(props) {
+        /** 上报去重：记住已经报过的会话，避免每次重渲染都刷一条。 */
+        const reportedRef = React.useRef(null);
         const sessionId = props?.sessionId;
         // 槽位注入了 keyboard(= composer shell)，它的 actions 带 setDraft/submit。
         const inputActions = props?.inputActions ?? props?.keyboard?.actions;
@@ -3531,12 +3592,16 @@ window.__ModuleLoader__.load({
         React.useEffect(() => {
           if (typeof sessionId !== 'string' || sessionId === '' || inputActions === undefined) return undefined;
           composerBridge = { sessionId, inputActions, draft: typeof draft === 'string' ? draft : '' };
-          report('composer:bridge-ready', {
-            sessionId,
-            via: props?.inputActions !== undefined ? 'inputActions' : 'keyboard.actions',
-            canSubmit: typeof inputActions.submit === 'function',
-            hasDraft: typeof draft === 'string' && draft.trim() !== '',
-          });
+          // 只在「换了会话」或「首次接上」时上报：草稿一变 effect 就会重跑，
+          // 每次重跑都上报会在输入时刷屏（实测 3 秒刷了 14 条）。
+          if (reportedRef.current !== sessionId) {
+            reportedRef.current = sessionId;
+            report('composer:bridge-ready', {
+              sessionId,
+              via: props?.inputActions !== undefined ? 'inputActions' : 'keyboard.actions',
+              canSubmit: typeof inputActions.submit === 'function',
+            });
+          }
           return () => {
             if (composerBridge !== null && composerBridge.sessionId === sessionId) composerBridge = null;
           };
