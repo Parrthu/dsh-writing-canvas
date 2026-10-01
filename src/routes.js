@@ -146,6 +146,7 @@ export function createApiHandler({
   logger,
   onPromptChanged,
   pickDirectory,
+  pickerStatus,
 }) {
   /** 同一工作区复用同一个实例（写入链才有意义）。 */
   const stores = new Map();
@@ -253,7 +254,7 @@ export function createApiHandler({
           // 就是这么来的。只有写作模式（preset 里的 mode/writing 行）才注入那两段。
           promptInjection: config.injectPrompt === true ? 'on' : 'off',
           // 导出能否让用户选保存位置，取决于这个服务是否挂载。
-          directoryPicker: typeof pickDirectory === 'function' ? 'available' : 'unavailable',
+          directoryPicker: typeof pickerStatus === 'function' ? pickerStatus() : 'unknowable',
           subscribers: bus?.size?.() ?? 0,
         });
         return;
@@ -824,15 +825,34 @@ export function createApiHandler({
         let usedDefaultDir = true;
         let pickerUnavailable = false;
         if (body.chooseDir === true) {
-          if (typeof pickDirectory !== 'function') {
+          // 把请求的生命周期接到选择器上：界面断开（关页面/取消）时原生对话框要跟着收掉，
+          // 否则会留一个没人应答的系统框挂在那儿。
+          const controller = new AbortController();
+          const onClose = () => controller.abort();
+          // req 与 res 都监听：实测只挂 req 时，客户端超时断开没能可靠触发，
+          // 结果是系统对话框留在屏幕上没人应答。
+          req.on('close', onClose);
+          res.on('close', onClose);
+          let picked;
+          try {
+            picked = typeof pickDirectory === 'function' ? await pickDirectory(controller.signal) : undefined;
+          } finally {
+            req.off('close', onClose);
+            res.off('close', onClose);
+          }
+          // 请求已经断了（页面关掉/客户端超时）：不要再往下导出，也不必回报什么。
+          if (controller.signal.aborted) {
+            sendJson(res, 200, { ok: false, error: 'aborted', message: '选择已中断。' });
+            return;
+          }
+          if (picked === undefined) {
+            // 服务没挂载 / 调用失败：退回默认目录，并**如实标注**，不能假装用户选过。
             pickerUnavailable = true;
+          } else if (picked === null) {
+            // 用户主动取消：不是错误，直接结束，不生成任何文件。
+            sendJson(res, 200, { ok: false, error: 'cancelled', message: '已取消导出。' });
+            return;
           } else {
-            const picked = await pickDirectory();
-            if (picked === null) {
-              // 用户主动取消：不是错误，直接结束，不生成任何文件。
-              sendJson(res, 200, { ok: false, error: 'cancelled', message: '已取消导出。' });
-              return;
-            }
             outDir = picked;
             usedDefaultDir = false;
           }

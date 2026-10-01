@@ -141,21 +141,69 @@ export function apply(ctx, rawConfig) {
    *
    * 结果缓存在闭包里：服务通常在启动时就位，之后整场会话复用。
    */
-  let pickerResolved = false;
+  /**
+   * 目录选择服务。
+   *
+   * 必须用 `ctx.inject` 声明式取，**不能**用 `ctx.get()` 查一次就缓存：
+   * `dsh-host-directory-picker-auto` 是「启动时判定宿主处境、再把匹配的后端挂进
+   * 内存根树」，也就是服务**出现得比本插件晚**。查一次缓存下来的结果会永远停在
+   * 「拿不到」——这一点已经实测踩过（health 报 service-unavailable）。
+   * `ctx.inject` 会等服务就绪再回调，与 webServer / tools 用的是同一套做法。
+   */
   let pickerService;
-  const pickDirectory = async () => {
-    if (!pickerResolved) {
-      try {
-        pickerService = ctx.get('directoryPicker');
-      } catch {
+  ctx.inject(['directoryPicker'], (scoped) => {
+    pickerService = scoped.directoryPicker;
+    ctx.logger.info('writing-canvas: 目录选择服务已就绪，导出时可让用户选保存位置');
+    scoped.effect(
+      () => () => {
         pickerService = undefined;
-      }
-      pickerResolved = true;
-    }
-    if (pickerService === undefined || typeof pickerService.pick !== 'function') return undefined;
+      },
+      'writing-canvas: 目录选择服务',
+    );
+  });
+
+  /** 给诊断用：不触发选择框，只回答「服务到底能不能用」。 */
+  const pickerStatus = () => {
+    if (pickerService === undefined || typeof pickerService.capability !== 'function') return 'service-unavailable';
     try {
-      // 不传 signal：目录选择由用户自己决定何时结束，不该被请求超时打断。
-      const picked = await pickerService.pick();
+      const kind = pickerService.capability()?.kind;
+      return kind === 'native' ? 'native-ready' : `unsupported:${String(kind)}`;
+    } catch {
+      return 'capability-threw';
+    }
+  };
+
+  /**
+   * 拉起系统目录选择框。
+   *
+   * 两个坑（都实测踩过）：
+   *   1. `pick` **不在服务实例上**，而在 `service.capability()` 返回的能力对象上——
+   *      判断 `service.pick` 永远是 undefined，会静默退化成"没有选择器"。
+   *   2. `signal` 是必需的：native 实现在用户取消时会读 `signal.aborted`，
+   *      不传会在取消路径上抛 TypeError。
+   *
+   * @param signal - AbortSignal，用于在请求断开时终止原生选择器。
+   * @returns 选中路径 | null（用户取消）| undefined（此环境不支持系统选择器）。
+   */
+  const pickDirectory = async (signal) => {
+    const service = pickerService;
+    if (service === undefined || typeof service.capability !== 'function') return undefined;
+    let capability;
+    try {
+      capability = service.capability();
+    } catch (error) {
+      ctx.logger.warn(`writing-canvas: 读取目录选择能力失败：${String(error)}`);
+      return undefined;
+    }
+    // 只有 native 形态会开系统对话框。browse 形态是给远程客户端用的应用内浏览，
+    // 本插件没实现那套 UI，按官方文档的建议「隐藏入口而不是失败」处理。
+    if (capability === undefined || capability === null || capability.kind !== 'native') {
+      ctx.logger.info(`writing-canvas: 目录选择能力是 ${String(capability?.kind)}，导出将使用默认目录`);
+      return undefined;
+    }
+    if (typeof capability.pick !== 'function') return undefined;
+    try {
+      const picked = await capability.pick(signal ?? new AbortController().signal);
       return typeof picked === 'string' && picked !== '' ? picked : null;
     } catch (error) {
       ctx.logger.warn(`writing-canvas: 目录选择失败，将使用默认导出目录：${String(error)}`);
@@ -186,10 +234,8 @@ export function apply(ctx, rawConfig) {
             onPromptChanged: () => {},
             // 服务不可用时返回 null 会与「用户取消」混淆，所以这里把不可用
             // 直接翻成 undefined，让接口层能分清这两种情况。
-            pickDirectory: async () => {
-              const picked = await pickDirectory();
-              return picked === undefined ? undefined : picked;
-            },
+            pickDirectory,
+            pickerStatus,
           }),
         }),
       'writing-canvas: 宿主 API 路由',
