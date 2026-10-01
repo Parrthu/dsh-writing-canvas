@@ -264,6 +264,8 @@ export function apply(ctx, rawConfig) {
       suggestionsFor,
       libraryFor,
       bus,
+      // 导出工具也要能让用户挑保存位置，和界面上的导出按钮走同一条路。
+      pickDirectory,
     });
   });
 

@@ -69,6 +69,7 @@ export function registerWritingTools({
   suggestionsFor,
   libraryFor,
   bus,
+  pickDirectory,
 }) {
   /**
    * 解析当前工具调用的目标文档。
@@ -323,7 +324,9 @@ export function registerWritingTools({
     description:
       '把画布正文按预设格式规格一键套用，生成 DOCX，并在生成后**回读校验**。' +
       '画布本身只管内容（Markdown）；字体、字号、行距这类版式由这个工具落地。' +
-      '返回里带 verification.checks，必须如实转述校验结果——校验没过就不能说「已按要求排版」。',
+      '返回里带 verification.checks，必须如实转述校验结果——校验没过就不能说「已按要求排版」。' +
+      '默认会拉起系统目录选择框让用户挑保存位置（与界面上的导出按钮一致）；' +
+      '要落到固定位置就传 directory。',
     parameters: {
       type: 'object',
       properties: {
@@ -331,6 +334,11 @@ export function registerWritingTools({
           type: 'string',
           description:
             '格式规格 id，例如 gongwen-gb9704（党政机关公文）、plain-docx（通用中文文档）、report-docx（工作报告）。省略则用文档已选写作类型的默认规格。',
+        },
+        directory: {
+          type: 'string',
+          description:
+            '保存目录（绝对路径）。省略时会拉起系统目录选择框让用户挑；用户取消则不生成文件。',
         },
       },
       additionalProperties: false,
@@ -358,6 +366,30 @@ export function registerWritingTools({
         };
       }
 
+      // 保存位置：与界面上的导出按钮保持一致——默认让用户选，
+      // 而不是每次都默默丢进工作区的 exports/（这一点被用户明确抱怨过）。
+      const wanted = typeof args.directory === 'string' ? args.directory.trim() : '';
+      let outDir;
+      let usedDefaultDir = true;
+      let pickerUnavailable = false;
+      if (wanted !== '') {
+        outDir = wanted;
+        usedDefaultDir = false;
+      } else if (typeof pickDirectory === 'function') {
+        const picked = await pickDirectory();
+        if (picked === undefined) {
+          pickerUnavailable = true;
+        } else if (picked === null) {
+          // 用户取消了选择：不生成任何文件，也不假装成功。
+          return { ok: false, cancelled: true, message: '用户取消了保存位置的选择，未生成文件。' };
+        } else {
+          outDir = picked;
+          usedDefaultDir = false;
+        }
+      } else {
+        pickerUnavailable = true;
+      }
+
       const report = await exportDocx({
         workspacePath,
         stateDir: store.stateDir,
@@ -366,6 +398,7 @@ export function registerWritingTools({
         spec: found.spec,
         specId,
         title: doc.meta.title,
+        outDir,
       });
 
       if (report.ok !== true) {
@@ -379,6 +412,13 @@ export function registerWritingTools({
         };
       }
 
+      // 保存位置据实播报：没选成、没有选择器都要说清楚，不能让用户以为文件在别处。
+      const where =
+        usedDefaultDir === false
+          ? ''
+          : pickerUnavailable === true
+            ? '（当前环境没有可用的目录选择器，已存到工作区的导出目录）'
+            : '（未选择位置，已存到工作区的导出目录）';
       return {
         ok: true,
         specId,
@@ -388,7 +428,9 @@ export function registerWritingTools({
         bytes: report.bytes,
         verification: report.verification,
         warnings: report.warnings ?? [],
-        message: `已按「${found.spec.label}」生成 DOCX 并通过 ${report.verification.total} 项回读校验，文件在 ${report.relativePath}。`,
+        usedDefaultDir,
+        pickerUnavailable,
+        message: `已按「${found.spec.label}」生成 DOCX 并通过 ${report.verification.total} 项回读校验，文件在 ${report.relativePath}。${where}`,
       };
     },
   });
@@ -409,7 +451,23 @@ export function registerWritingTools({
     async execute(args, exec) {
       const { library } = await targetOf(exec);
       const userSets = library === undefined ? [] : await library.listSets();
-      const all = [...BUILTIN_MARKDOWN_SETS.map((x) => ({ ...x, source: 'builtin' })), ...userSets.map((x) => ({ ...x, source: 'user' }))];
+      // 必须把内置 DOCX 版式一并列出：本工具的说明写着「分 markdown 与 docx 两种载体」，
+      // 早先只给了 markdown，于是 AI 根本不知道「党政机关公文」「工作报告」这些版式存在，
+      // 与 /format-sets 接口（它两者都给）也对不上。
+      const builtinDocx = listFormatSpecs().map((item) => ({
+        id: item.id,
+        name: item.label,
+        kind: 'docx',
+        source: 'builtin',
+        description: `正文 ${item.body.fontEastAsia} ${item.body.sizePt}pt${
+          item.body.lineSpacingPt ? ` · 固定行距 ${item.body.lineSpacingPt}pt` : ''
+        }`,
+      }));
+      const all = [
+        ...BUILTIN_MARKDOWN_SETS.map((x) => ({ ...x, source: 'builtin' })),
+        ...builtinDocx,
+        ...userSets.map((x) => ({ ...x, source: 'user' })),
+      ];
       if (typeof args.id === 'string' && args.id !== '') {
         const found = all.find((x) => x.id === args.id);
         if (found === undefined) return { ok: false, message: `没有 id 为 ${args.id} 的格式集。`, available: all.map((x) => x.id) };
