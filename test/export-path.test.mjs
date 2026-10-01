@@ -132,3 +132,29 @@ test('回归：服务就绪判定要看 capability，不能只看服务对象存
 test('docx.js 导出纯路径函数，便于直接测试', () => {
   assert.match(DOCX_SOURCE, /export function resolveExportPath/, '必须是可导入的纯函数');
 });
+
+// ---- 2026-10-01 事故：AI 提交了建议，右侧面板收不到 ---------------------------
+
+test('回归：/annotations 必须连建议一起返回', () => {
+  // 客户端收到 annotations-changed 后只拉这一个接口；早先它只给 annotations，
+  // 于是建议在实时路径上被静默丢弃，只有整页刷新（走 /doc）才出现。
+  const idx = ROUTES_SOURCE.indexOf("route === '/annotations' && method === 'GET'");
+  assert.ok(idx > 0, '接口要存在');
+  const block = ROUTES_SOURCE.slice(idx, idx + 1400);
+  assert.match(block, /suggestionsFor\(target\.workspacePath\)\.list/, '要拉取建议');
+  assert.match(block, /\{ ok: true, docId: target\.docId, annotations, suggestions \}/, '响应里要带上建议');
+});
+
+test('回归：客户端收到批注变更后要同时更新建议', () => {
+  const idx = CLIENT_SOURCE.indexOf("payload?.type === 'annotations-changed'");
+  assert.ok(idx > 0, '要处理该事件');
+  const block = CLIENT_SOURCE.slice(idx, idx + 500);
+  assert.match(block, /apiGet\('\/annotations'/, '拉取批注接口');
+  assert.match(block, /setSuggestions\(data\.suggestions\)/, '建议必须一并更新');
+});
+
+test('回归：切回窗口要补一次同步（错过的推送能自愈）', () => {
+  assert.match(CLIENT_SOURCE, /visibilitychange/, '监听切回前台');
+  assert.match(CLIENT_SOURCE, /syncOnReturn/, '要有同步动作');
+  assert.match(CLIENT_SOURCE, /removeEventListener\('visibilitychange', syncOnReturn\)/, '卸载时清理监听');
+});

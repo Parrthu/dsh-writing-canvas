@@ -1147,9 +1147,24 @@ window.__ModuleLoader__.load({
 
         connect();
 
+        /**
+         * 切回窗口时补一次同步。
+         *
+         * 事件流是「推送才更新」，一旦错过一条（例如后端刚热重载完、连接正在重建），
+         * 界面就会一直停在旧状态，而用户完全不知道要刷新。回到前台时主动拉一次，
+         * 这类「明明已经有了却看不到」的问题就自愈了。
+         */
+        const syncOnReturn = () => {
+          if (document.visibilityState === 'visible') void refresh();
+        };
+        document.addEventListener('visibilitychange', syncOnReturn);
+        window.addEventListener('focus', syncOnReturn);
+
         return () => {
           disposed = true;
           if (retryTimer !== null) clearTimeout(retryTimer);
+          document.removeEventListener('visibilitychange', syncOnReturn);
+          window.removeEventListener('focus', syncOnReturn);
           try {
             source?.close();
           } catch {

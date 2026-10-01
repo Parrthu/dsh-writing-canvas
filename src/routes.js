@@ -556,7 +556,11 @@ export function createApiHandler({
         }
         const doc = await storeFor(target.workspacePath).readDoc(target.docId);
         const annotations = await annotationsFor(target.workspacePath).list(target.docId, doc?.latest?.content);
-        sendJson(res, 200, { ok: true, docId: target.docId, annotations });
+        // 必须连建议一起返回。客户端收到 annotations-changed 后只拉这一个接口，
+        // 早先这里只给 annotations，于是「AI 提交了建议、用户却看不到」——
+        // 只有整页刷新（走 /doc）才会出现，症状是「建议右侧没收到」。
+        const suggestions = await suggestionsFor(target.workspacePath).list(target.docId, doc?.latest?.content);
+        sendJson(res, 200, { ok: true, docId: target.docId, annotations, suggestions });
         return;
       }
 
