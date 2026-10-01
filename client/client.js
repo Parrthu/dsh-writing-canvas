@@ -510,8 +510,7 @@ window.__ModuleLoader__.load({
       /**
        * 正在填写的 AI 选区动作：{ kind, text, start, end } 或 null。
        *
-        * 用它会让那几个按钮点了毫无反应，看起来像不可用。
-        * 改为在浮动工具条内联出输入框。
+       * 为什么不用 window.prompt：**Electron 不支持它**（调用会直接抛错）。
        */
       const [aiAction, setAiAction] = React.useState(null);
       /** AI 动作输入框里的文字。 */
@@ -530,7 +529,7 @@ window.__ModuleLoader__.load({
        *
        * 这套做法成立的前提是两层**逐字符对齐**。虽然语法标记用 visibility 占位
        * 保证了宽度不变，但字体渲染总有万一（比如某个字体下加粗会略宽），
-        * 所以下面还有一道校验：两层的渲染高度对不上就自动退回纯文本，
+       * 所以两层的渲染高度对不上就会自动退回纯文本，
        * 宁可不漂亮，也不能让光标和文字错位。
        */
       const [richText, setRichText] = React.useState(true);
@@ -572,9 +571,6 @@ window.__ModuleLoader__.load({
 
       /**
        * 新建议一到就把抽屉展开到建议面板。
-       *
-        * 窄栏模式下建议面板默认收起，只留一个「建议 N」的小标签，
-        * 新建议落盘了也容易被当成没生效。**看不见等于没做**，所以这里改成自动展开。
        *
        * 只在**数量增加**时展开：用户手动收起后不会又被弹开。
        */
@@ -740,9 +736,7 @@ window.__ModuleLoader__.load({
       /**
        * 撰写中把视野拉到最新写出的那一段。
        *
-        * **用户一旦自己往上翻，就必须停手**。每个 tick 都无条件拉到底的话，
-        * 想回看前文时会被一直拽回底部，既没法读也说不清为什么。
-        * 滚回底部附近即自动恢复跟随。
+       * **用户一旦自己往上翻，就必须停手**；滚回底部附近即自动恢复跟随。
        */
       const followWritingTail = () => {
         if (followPausedRef.current) return;
@@ -841,8 +835,7 @@ window.__ModuleLoader__.load({
        */
       React.useLayoutEffect(() => {
         if (!richOn) return;
-        // 正文还是空的就别急着下结论：此刻两层都只有内边距高，
-        // 拿这个去比会得出「差 600 多像素」的假警报。
+        // 正文还是空的就别急着下结论：此刻两层都只有内边距高。
         if (text.trim() === '') return;
         const probe = () => {
           const el = editorRef.current;
@@ -1366,8 +1359,7 @@ window.__ModuleLoader__.load({
       /**
        * 选中一个格式集就**立即生效**。
        *
-        * 不做「选中只改本地状态、再点一下确认才写入」那套：多一步确认没有必要。
-        * 选中即写进文档 meta，不生成版本、不动正文。
+       * 选中即写进文档 meta，不生成版本、不动正文。
        */
       const chooseSet = async (setId) => {
         setExportSpec(setId);
@@ -1499,9 +1491,6 @@ window.__ModuleLoader__.load({
        */
       /**
        * 导出 DOCX。
-       *
-        * 这里只做导出。格式集的确认已由「选中即生效」承担，不需要第二个入口，
-        * 因此不再保留 Markdown 分支。
        */
       const applyFormatSpec = async () => {
         setExporting(true);
@@ -1510,8 +1499,7 @@ window.__ModuleLoader__.load({
           const { ok, data } = await apiPost('/export', {
             ...targetBody(target),
             specId: exportSpec === '' ? undefined : exportSpec,
-            // 导出前先让用户选保存位置（系统目录选择框），
-            // 而不是固定写进工作区的 exports/。
+            // 导出前先让用户选保存位置（系统目录选择框）。
             chooseDir: true,
           });
           // 用户在选择框里点了取消：不是错误，安静收场，也不生成文件。
@@ -1772,8 +1760,7 @@ window.__ModuleLoader__.load({
                   ? h(
                       'div',
                       { className: 'wcv-annoActions' },
-                      // 让 AI 真的去改：把这条批注发到对话框，AI 读到后直接改画布；
-                      // 否则批注只能手动标记状态，没法交给 AI 处理。
+                      // 让 AI 真的去改：把这条批注发到对话框，AI 读到后直接改画布。
                       h(
                         'button',
                         {
@@ -2152,8 +2139,7 @@ window.__ModuleLoader__.load({
                   ),
                 ),
               ),
-              // 只有 DOCX 才需要一个动作按钮（导出是真动作）；
-              // 格式集选中即生效，不需要额外的确认按钮。
+              // 只有 DOCX 才需要一个动作按钮（导出是真动作）。
               currentSet !== undefined && currentSet.kind === 'docx'
                 ? iconButton({
                     icon: exporting ? IconRefresh : IconDownload,
@@ -3803,10 +3789,6 @@ window.__ModuleLoader__.load({
           }
 
           // 只有**写作模式**才自动调出画布。
-          //
-          // 走过的两条弯路，别再回头：
-          //   1. 「只要会话在屏幕上就开」——每建一个任务都弹空画布。
-          //   2. 「文档里有正文才恢复」——仍然会在普通任务的会话里弹出来。
           //
           // 现在的判据是**会话的 agent preset 是不是 writing**：
           //   - 写作模式 → 自动调出画布（这正是选它的意义）

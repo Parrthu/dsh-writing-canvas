@@ -229,9 +229,6 @@ export class WorkspaceLibrary {
 
 /**
  * 内置的 Markdown 体例 Set。
- *
- * 有些场景不需要导出 DOCX、直接用 Markdown 交付，所以标题层级、正文体例、
- * 分隔线这些**写作体例**也要准备成可套用的 Set，而不是只管 DOCX 版式。
  */
 export const BUILTIN_MARKDOWN_SETS = [
   {
