@@ -242,11 +242,13 @@ window.__ModuleLoader__.load({
 .wcv-md-italic { font-style: italic; }
 .wcv-md-strike { text-decoration: line-through; }
 .wcv-md-code { background: var(--dsw-alias-bg-layer-2, rgba(128,128,128,0.16)); border-radius: 3px;
-  color: var(--dsw-alias-brand-primary, #4d6bfe); }
+  color: var(--dsw-alias-link, #4d6bfe); }
 /* 标题只改颜色与字重，**不改字号**：字号一变宽度就变，光标立刻错位。 */
-.wcv-md-heading { font-weight: 700; color: var(--dsw-alias-brand-primary, #4d6bfe); }
+/* 用 alias-link（品牌蓝）而不是 brand-primary：后者在本主题里就等于主文字色，
+   标题会跟正文一样黑，等于没有强调。这个变量随深浅主题自适应。 */
+.wcv-md-heading { font-weight: 700; color: var(--dsw-alias-link, #4d6bfe); }
 .wcv-md-quote { color: var(--dsw-alias-label-secondary, #6b6b6b); }
-.wcv-md-link { color: var(--dsw-alias-brand-primary, #4d6bfe); text-decoration: underline;
+.wcv-md-link { color: var(--dsw-alias-link, #4d6bfe); text-decoration: underline;
   text-underline-offset: 2px; }
 .wcv-root--pane .wcv-highlightInner { font-size: 14px; padding: 12px 14px; }
 .wcv-mark { background: rgba(255, 176, 32, 0.28); border-radius: 3px; color: transparent; }
