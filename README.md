@@ -84,7 +84,7 @@ dsh plugin --profile <profile> remove dsh-writing-canvas
 ## 开发
 
 ```bash
-npm test          # 192 项行为测试，不依赖 DSH 运行时
+npm test          # 194 项行为测试，不依赖 DSH 运行时
 npm run check     # 语法检查
 ```
 
@@ -104,7 +104,7 @@ npm run check     # 语法检查
 │  └─ types/registry.js + 5 个类型包
 ├─ client/client.js             浏览器半体（就是最终产物）
 ├─ scripts/docx_tool.py         python-docx 生成 + 回读校验
-├─ test/                        192 项测试
+├─ test/                        194 项测试
 └─ docs/
 ```
 

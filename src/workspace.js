@@ -1,3 +1,5 @@
+import { basename } from 'node:path';
+
 /**
  * 会话 → 工作区解析。
  *
@@ -16,7 +18,11 @@
 export function createWorkspaceLister(ctx) {
   return () => {
     const registry = ctx.get('workspaceRegistry');
-    if (registry === undefined || registry === null || typeof registry.list !== 'function') return [];
+    if (registry === undefined || registry === null || typeof registry.list !== 'function') {
+      // headless 之类的 profile 没有挂 workspaceRegistry（它来自 dsh-web-app）。
+      // 与 ZCode 移植版同语义：把进程 cwd 当作唯一登记工作区，写作工具照常可用。
+      return [{ id: 'headless', path: process.cwd(), title: basename(process.cwd()) }];
+    }
     try {
       return registry.list().map((workspace) => ({
         id: String(workspace.id ?? ''),
@@ -24,7 +30,7 @@ export function createWorkspaceLister(ctx) {
         title: workspace.title ?? workspace.path,
       }));
     } catch {
-      return [];
+      return [{ id: 'headless', path: process.cwd(), title: basename(process.cwd()) }];
     }
   };
 }
@@ -38,7 +44,8 @@ export function createWorkspaceResolver(ctx) {
   return async (sessionId) => {
     const registry = ctx.get('workspaceRegistry');
     if (registry === undefined || registry === null || typeof registry.list !== 'function') {
-      throw new Error('workspaceRegistry 服务不可用，无法确定写作状态目录');
+      // 与 lister 同一套回退：headless profile 里以 cwd 为工作区。
+      return process.cwd();
     }
     const workspaces = registry.list();
     if (!Array.isArray(workspaces) || workspaces.length === 0) {

@@ -149,8 +149,10 @@ export function registerWritingTools({
         writingType: doc.meta.writingType ?? null,
         writingTypeLabel: type?.label ?? null,
         format: doc.meta.format,
-        latestVersion: doc.latest.n,
-        content: doc.latest.content,
+        // meta 存在但还没有任何版本是合法状态（先选类型/先改标题）：
+        // latest 为 null，绝不能在这里炸掉——模型会看到工具报错而不是画布。
+        latestVersion: doc.latest?.n ?? 0,
+        content: doc.latest?.content ?? '',
         versions: versions.map((item) => ({
           n: item.n,
           at: item.at,
@@ -217,6 +219,17 @@ export function registerWritingTools({
         note: typeof args.note === 'string' ? args.note : '',
         baseVersion: Number.isInteger(args.baseVersion) ? args.baseVersion : undefined,
       });
+
+      if (saved.emptyRejected === true) {
+        // 空内容覆盖被拦截必须如实返回。什么都不写却回 ok:true version:N，
+        // 模型会以为自己写成了，用户会以为正文没了。
+        return {
+          ok: false,
+          emptyRejected: true,
+          message: `写入被拒绝：你提交的是空内容，而服务端 v${saved.latest.n} 不是空的。清空正文需要用户明确确认，请先与用户确认后再说明。`,
+          serverVersion: saved.latest.n,
+        };
+      }
 
       if (saved.conflict === true) {
         // 冲突时同时结束「撰写中」，否则界面会一直转圈。
@@ -309,6 +322,16 @@ export function registerWritingTools({
     async execute(args, exec) {
       const { docId, store } = await targetOf(exec);
       const restored = await store.restoreVersion(docId, args.n);
+      if (restored.emptyRejected === true || restored.conflict === true) {
+        return {
+          ok: false,
+          emptyRejected: restored.emptyRejected === true,
+          conflict: restored.conflict === true,
+          message: '还原未写入：' + (restored.emptyRejected === true ? '目标版本内容为空被拦截。' : '与当前版本冲突。'),
+        };
+      }
+      // 界面不会自己知道存储变了：推送一次，否则画布要等用户手动刷新。
+      bus?.publishDocChanged?.(docId, { version: restored.latest.n, source: 'restore' });
       return {
         ok: true,
         restoredFrom: args.n,
@@ -350,7 +373,8 @@ export function registerWritingTools({
     async execute(args, exec) {
       const { docId, workspacePath, store } = await targetOf(exec);
       const doc = await store.readDoc(docId);
-      if (doc === null) {
+      // meta-only（尚无版本）与不存在同样视为「还没有内容」。
+      if (doc === null || (doc.latest?.content ?? '').trim() === '') {
         return { ok: false, message: '这份文档还没有内容，先写正文再套用格式。' };
       }
       const specId =
@@ -393,7 +417,7 @@ export function registerWritingTools({
         workspacePath,
         stateDir: store.stateDir,
         docId,
-        content: doc.latest.content,
+        content: doc.latest?.content ?? '',
         spec: found.spec,
         specId,
         title: doc.meta.title,
@@ -588,7 +612,8 @@ export function registerWritingTools({
       const custom = library === undefined ? [] : await library.listTypes();
       const types = [...listTypes(), ...custom];
       if (typeof args.id === 'string' && args.id !== '') {
-        const type = getType(args.id);
+        // 与 writing_type_set 同一口径：自定义类型也要能读到完整约束。
+        const type = getType(args.id) ?? custom.find((item) => item.id === args.id);
         if (type === undefined) {
           return {
             ok: false,
@@ -652,7 +677,9 @@ export function registerWritingTools({
         };
       }
       const { docId, store } = await targetOf(exec);
-      const meta = await store.setType(docId, type.id);
+      // 把类型定义一并传入：DOCX 类型（如公文）的默认规格要落到 meta.format，
+      // 否则导出默认规格永远回退 plain-docx。
+      const meta = await store.setType(docId, type.id, type);
       return {
         ok: true,
         writingType: type.id,

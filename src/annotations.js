@@ -37,6 +37,19 @@ function newId() {
 }
 
 /** 原子写 JSON。 */
+/**
+ * 把损坏的存储文件挪到一边留存（.corrupted-<时间戳> 后缀）。
+ * 没有「损坏」这回事的静默覆盖是最坏结局：用户丢数据还毫不知情。
+ */
+async function quarantineCorruptedFile(filePath) {
+  if (!existsSync(filePath)) return;
+  try {
+    await rename(filePath, `${filePath}.corrupted-${Date.now()}`);
+  } catch {
+    // 挪不动（被占用等）就维持原状：后续写入仍会覆盖，但不阻断正常功能。
+  }
+}
+
 async function writeJsonAtomic(filePath, value) {
   const tmp = `${filePath}.tmp-${process.pid}-${Date.now()}`;
   await writeFile(tmp, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
@@ -110,7 +123,10 @@ export class AnnotationStore {
       const parsed = JSON.parse(await readFile(file, 'utf8'));
       return { version: 1, items: Array.isArray(parsed?.items) ? parsed.items : [] };
     } catch {
-      // 文件损坏时不让整条链路失败，返回空并保留错误可见性。
+      // 文件损坏时不让整条链路失败：把坏文件隔离留存，再从空状态继续。
+      // 只返回空数组而不落盘的话，下一次写入就会把损坏文件连同里面的
+      // 历史批注一起静默清掉——损坏不能等于清库。
+      await quarantineCorruptedFile(file);
       return { version: 1, items: [], corrupted: true };
     }
   }
@@ -131,7 +147,7 @@ export class AnnotationStore {
       if (relocated === null) return { ...item, anchorLost: true };
       return { ...item, range: relocated, anchorLost: false };
     });
-    return corrupted === true ? decorated : decorated;
+    return decorated;
   }
 
   /**

@@ -227,6 +227,23 @@ export function createApiHandler({
     return { workspacePath: await resolveWorkspacePath(sessionId), docId: docIdOfSession(sessionId) };
   };
 
+  /**
+   * 某个工作区可用的全部写作类型（内置 + 自定义）。
+   *
+   * 界面的类型下拉来自这里，工具层也用同一口径：只查内置注册表会让
+   * 「Agent 用 writing_type_create 建的自定义类型」在界面上永远选不中
+   * （400 unknown-writing-type），虽然 /types 明明把它列进了下拉。
+   */
+  const typesForWorkspace = async (workspacePath) => {
+    let custom = [];
+    try {
+      custom = await libraryFor(workspacePath).listTypes();
+    } catch {
+      custom = [];
+    }
+    return [...listTypes(), ...custom];
+  };
+
   /** 从 URL 查询串收集寻址参数。 */
   const paramsFromUrl = (url) => ({
     sessionId: url.searchParams.get('sessionId') ?? undefined,
@@ -404,6 +421,8 @@ export function createApiHandler({
           baseVersion: Number.isInteger(body.baseVersion) ? body.baseVersion : undefined,
           force: body.force === true,
           allowEmpty: body.allowEmpty === true,
+          coalesce: body.coalesce === true,
+          coalesceMs: config.versionCoalesceMs,
         });
 
         if (saved.emptyRejected === true) {
@@ -488,6 +507,21 @@ export function createApiHandler({
         }
         const store = storeFor(target.workspacePath);
         const restored = await store.restoreVersion(target.docId, Number(body.n));
+        // 还原语义上不该触发拦截（store 已放行显式还原），但一旦触发必须如实
+        // 报错，不能静默不写却报 ok——那会让界面与存储各说各话。
+        if (restored.emptyRejected === true || restored.conflict === true) {
+          sendJson(res, 409, {
+            restoreRejected: restored.emptyRejected === true,
+            conflict: restored.conflict === true,
+            docId: target.docId,
+            workspace: restored.workspace,
+            meta: restored.meta,
+            latest: restored.latest,
+            versions: await store.listVersions(target.docId),
+            message: '还原未写入（与当前版本冲突或内容为空被拦截），请刷新后重试。',
+          });
+          return;
+        }
         bus?.publishDocChanged?.(target.docId, { version: restored.latest.n, source: 'restore' });
         sendJson(res, 200, {
           ok: true,
@@ -501,7 +535,6 @@ export function createApiHandler({
         return;
       }
 
-      // ---- 设定写作类型（界面里用户直接选）--------------------------------
       // ---- 选中格式集即生效（不再需要点确认按钮）------------------------
       if (route === '/doc/format' && method === 'POST') {
         const body = await readJsonBody(req, 64 * 1024);
@@ -525,7 +558,8 @@ export function createApiHandler({
           return;
         }
         const wanted = typeof body.typeId === 'string' ? body.typeId : '';
-        const known = listTypes();
+        // 内置与自定义类型同一口径（修复：自定义类型在界面里选不中）。
+        const known = await typesForWorkspace(target.workspacePath);
         if (wanted === '') {
           await storeFor(target.workspacePath).setType(target.docId, undefined);
           sendJson(res, 200, { ok: true, writingType: null });
@@ -536,7 +570,7 @@ export function createApiHandler({
           sendJson(res, 400, { error: 'unknown-writing-type', typeId: wanted, available: known.map((t) => t.id) });
           return;
         }
-        const meta = await storeFor(target.workspacePath).setType(target.docId, type.id);
+        const meta = await storeFor(target.workspacePath).setType(target.docId, type.id, type);
         sendJson(res, 200, {
           ok: true,
           writingType: type.id,
@@ -652,7 +686,9 @@ export function createApiHandler({
           return;
         }
         const typeId = url.searchParams.get('typeId') ?? '';
-        const type = listTypes().find((item) => item.id === typeId);
+        // 自定义类型同样允许查看与覆盖提示词（library.setTypePrompt 本就支持 custom: 前缀）。
+        const knownTypes = await typesForWorkspace(target.workspacePath);
+        const type = knownTypes.find((item) => item.id === typeId);
         if (type === undefined) {
           sendJson(res, 404, { ok: false, error: `没有这个写作类型：${typeId}` });
           return;
@@ -680,7 +716,8 @@ export function createApiHandler({
           return;
         }
         const typeId = typeof body.typeId === 'string' ? body.typeId : '';
-        if (listTypes().every((item) => item.id !== typeId)) {
+        const knownTypes = await typesForWorkspace(target.workspacePath);
+        if (knownTypes.every((item) => item.id !== typeId)) {
           sendJson(res, 404, { ok: false, error: `没有这个写作类型：${typeId}` });
           return;
         }
@@ -801,7 +838,7 @@ export function createApiHandler({
         }
         const store = storeFor(target.workspacePath);
         const doc = await store.readDoc(target.docId);
-        if (doc === null) {
+        if (doc === null || (doc.latest?.content ?? '').trim() === '') {
           sendJson(res, 400, { error: 'document-empty', message: '这份文档还没有内容，先写点东西再套用格式。' });
           return;
         }
@@ -865,7 +902,7 @@ export function createApiHandler({
           workspacePath: target.workspacePath,
           stateDir: config.stateDir,
           docId: target.docId,
-          content: doc.latest.content,
+          content: doc.latest?.content ?? '',
           spec: found.spec,
           specId,
           title: doc.meta.title,

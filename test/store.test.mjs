@@ -264,3 +264,61 @@ test('回归：正文未变时改标题要写回（不能静默吞掉）', async
     assert.equal(doc.meta.title, '那一栏', '标题必须真的落盘');
   });
 });
+
+test('版本折叠：coalesce 窗口内的连续保存改写最新版本而非新增', async () => {
+  await withStore(async (store) => {
+    await store.saveDoc('doc', '第一版。', { source: 'user' });
+    const r1 = await store.saveDoc('doc', '第一版。\n第二行。', {
+      source: 'user', coalesce: true, coalesceMs: 60_000, note: '自动保存',
+    });
+    assert.equal(r1.coalesced, true);
+    assert.equal(r1.latest.n, 1, '折叠不新增版本号');
+    assert.equal(r1.latest.folds, 1);
+    assert.equal(r1.meta.versionCount, 1);
+    assert.ok(r1.latest.content.includes('第二行。'));
+    const r2 = await store.saveDoc('doc', '第一版。\n第二行。\n第三行。', {
+      source: 'user', coalesce: true, coalesceMs: 60_000,
+    });
+    assert.equal(r2.latest.n, 1);
+    assert.equal(r2.latest.folds, 2);
+    const versions = await store.listVersions('doc');
+    assert.equal(versions.length, 1, '窗口内的三次保存只有一个版本文件');
+    assert.equal(versions[0].note, '自动保存', '首次的 note 在无新 note 时保留');
+  });
+});
+
+test('版本折叠：换来源或窗口外照常新增版本', async () => {
+  await withStore(async (store, dir) => {
+    await store.saveDoc('doc', '第一版。', { source: 'user' });
+    // 换来源：用户 → Agent 不折叠
+    const ra = await store.saveDoc('doc', '第一版。\nAI 补一段。', {
+      source: 'agent', coalesce: true, coalesceMs: 60_000,
+    });
+    assert.equal(ra.coalesced, undefined);
+    assert.equal(ra.latest.n, 2);
+    // 把最新版本的 at 拨回 10 分钟前：窗口外不折叠
+    const v2Path = join(dir, '.writing-canvas', 'docs', 'doc', 'v0002.json');
+    const record = JSON.parse(await readFile(v2Path, 'utf8'));
+    record.at = new Date(Date.now() - 10 * 60_000).toISOString();
+    const { writeFile } = await import('node:fs/promises');
+    await writeFile(v2Path, JSON.stringify(record, null, 2) + '\n', 'utf8');
+    const rb = await store.saveDoc('doc', record.content + '\n窗口外的一行。', {
+      source: 'agent', coalesce: true, coalesceMs: 60_000,
+    });
+    assert.equal(rb.coalesced, undefined);
+    assert.equal(rb.latest.n, 3);
+    const versions = await store.listVersions('doc');
+    assert.equal(versions.length, 3);
+  });
+});
+
+test('版本折叠：不带 coalesce 的调用（AI 写入/还原/建议接受）永不折叠', async () => {
+  await withStore(async (store) => {
+    await store.saveDoc('doc', '第一版。', { source: 'agent' });
+    const r = await store.saveDoc('doc', '第一版。\n第二段。', { source: 'agent' });
+    assert.equal(r.coalesced, undefined);
+    assert.equal(r.latest.n, 2, 'AI 连续写入也各自成版（分段流式的语义）');
+    const versions = await store.listVersions('doc');
+    assert.equal(versions.length, 2);
+  });
+});

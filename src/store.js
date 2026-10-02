@@ -16,6 +16,9 @@
 
 import { createHash } from 'node:crypto';
 import { mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises';
+
+/** 版本折叠默认窗口：同一来源 60 秒内的连续小改动合并为一个版本。 */
+const DEFAULT_COALESCE_MS = 60_000;
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -163,7 +166,7 @@ export class DocumentStore {
    * @param typeId - 写作类型 id。
    * @returns 更新后的 meta。
    */
-  async setType(docId, typeId) {
+  async setType(docId, typeId, typeInfo = null) {
     assertSafeDocId(docId);
     return this.#enqueue(docId, async () => {
       const dir = this.docDir(docId);
@@ -171,10 +174,23 @@ export class DocumentStore {
       const metaPath = join(dir, 'meta.json');
       const existing = existsSync(metaPath) ? JSON.parse(await readFile(metaPath, 'utf8')) : null;
       const at = new Date().toISOString();
+      // 类型的默认格式只在用户没有显式选过格式集时生效：
+      // 用户选过 set 就是用户的选择，换类型不该把它顶掉。
+      // 不接 typeInfo 时公文等 DOCX 类型的默认规格永远落不到 meta，
+      // 导出默认值只能一直回退 plain-docx。
+      let format = existing?.format ?? null;
+      if (format === null || format === undefined || format.set === undefined) {
+        const typeFormat = typeInfo?.format;
+        if (typeFormat?.kind === 'docx') {
+          format = { kind: 'docx', ...(typeof typeFormat.spec === 'string' ? { spec: typeFormat.spec } : {}) };
+        } else if (existing === null) {
+          format = { kind: 'markdown' };
+        }
+      }
       const meta = {
         docId,
         title: existing?.title ?? '未命名文档',
-        format: existing?.format ?? { kind: 'markdown' },
+        format: format ?? { kind: 'markdown' },
         createdAt: existing?.createdAt ?? at,
         updatedAt: at,
         latest: existing?.latest ?? 0,
@@ -237,7 +253,9 @@ export class DocumentStore {
     if (!existsSync(dir)) return [];
     const names = await readdir(dir);
     const numbers = names
-      .filter((name) => /^v\d{4}\.json$/.test(name))
+      // 版本号不做位数假设：v10000 也是合法版本（位数封顶会让千次之后的
+      // 版本从历史里凭空消失）。
+      .filter((name) => /^v\d+\.json$/.test(name))
       .map((name) => Number(name.slice(1, 5)))
       .sort((a, b) => a - b);
     const out = [];
@@ -322,6 +340,55 @@ export class DocumentStore {
         return { meta: existing, latest, unchanged: true, workspace: this.workspacePath, stateDir: this.stateDir };
       }
 
+      // 版本折叠：同一来源在折叠窗口内的连续小改动，改写最新版本而不是新增。
+      //
+      // 打字的自动保存停一次就是一个版本，一篇文章能堆出几十个 vN，历史反而
+      // 没法看。窗口内的保存改写最新版本文件（n 不变，folds 计数累加）；
+      // 窗口外、换来源、AI 写入与还原（不带 coalesce）照常新增版本。
+      const recordSource = typeof options.source === 'string' ? options.source : 'user';
+      const foldWindowMs =
+        options.coalesce === true
+          ? typeof options.coalesceMs === 'number' && options.coalesceMs > 0
+            ? options.coalesceMs
+            : DEFAULT_COALESCE_MS
+          : 0;
+      if (foldWindowMs > 0 && existing !== null && existing.latest > 0) {
+        const latestRecord = await this.readVersion(docId, existing.latest);
+        const ageMs = latestRecord === null ? Number.POSITIVE_INFINITY : Date.now() - Date.parse(latestRecord.at);
+        if (
+          latestRecord !== null &&
+          latestRecord.source === recordSource &&
+          Number.isFinite(ageMs) &&
+          ageMs >= 0 &&
+          ageMs <= foldWindowMs
+        ) {
+          const at = new Date().toISOString();
+          const record = {
+            ...latestRecord,
+            at,
+            note: typeof options.note === 'string' && options.note !== '' ? options.note : latestRecord.note,
+            content,
+            bytes: Buffer.byteLength(content, 'utf8'),
+            hash,
+            folds: (latestRecord.folds ?? 0) + 1,
+          };
+          await writeJsonAtomic(join(dir, versionFileName(existing.latest)), record);
+          const meta = {
+            docId,
+            title: typeof options.title === 'string' && options.title !== '' ? options.title : existing.title,
+            format: existing.format ?? { kind: 'markdown' },
+            createdAt: existing.createdAt,
+            updatedAt: at,
+            latest: existing.latest,
+            latestHash: hash,
+            versionCount: existing.versionCount,
+            ...(existing.writingType !== undefined ? { writingType: existing.writingType } : {}),
+          };
+          await writeJsonAtomic(metaPath, meta);
+          return { meta, latest: record, coalesced: true, workspace: this.workspacePath, stateDir: this.stateDir };
+        }
+      }
+
       const n = (existing?.latest ?? 0) + 1;
       const at = new Date().toISOString();
       const record = {
@@ -368,9 +435,12 @@ export class DocumentStore {
   async restoreVersion(docId, n) {
     const record = await this.readVersion(docId, n);
     if (record === null) throw new Error(`版本 v${n} 不存在`);
+    // 还原是用户的显式动作，明确传 allowEmpty：还原到空的旧版本应当成功。
+    // 空内容覆盖保护针对的是「意外的清空」，不该拦下显式还原。
     return this.saveDoc(docId, record.content, {
       source: 'restore',
       note: `还原自 v${String(n).padStart(4, '0')}`,
+      allowEmpty: true,
     });
   }
 }

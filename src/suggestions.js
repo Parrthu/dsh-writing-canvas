@@ -24,6 +24,19 @@ function newId() {
 }
 
 /** 原子写 JSON。 */
+/**
+ * 把损坏的存储文件挪到一边留存（.corrupted-<时间戳> 后缀）。
+ * 建议文件损坏时若只是当空数组用，下一次写入就会把文件静默清掉。
+ */
+async function quarantineCorruptedFile(filePath) {
+  if (!existsSync(filePath)) return;
+  try {
+    await rename(filePath, `${filePath}.corrupted-${Date.now()}`);
+  } catch {
+    // 挪不动就维持原状：不阻断正常功能。
+  }
+}
+
 async function writeJsonAtomic(filePath, value) {
   const tmp = `${filePath}.tmp-${process.pid}-${Date.now()}`;
   await writeFile(tmp, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
@@ -94,6 +107,8 @@ export class SuggestionStore {
       const parsed = JSON.parse(await readFile(file, 'utf8'));
       return Array.isArray(parsed?.items) ? parsed.items : [];
     } catch {
+      // 与 annotations 同款处理：隔离坏文件，避免下次写入静默清库。
+      await quarantineCorruptedFile(file);
       return [];
     }
   }

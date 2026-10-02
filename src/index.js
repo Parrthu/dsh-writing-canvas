@@ -29,6 +29,8 @@ const DEFAULT_CONFIG = {
   stateDir: '.writing-canvas',
   promptSectionOrder: 118,
   maxDocumentBytes: 4 * 1024 * 1024,
+  // 版本折叠窗口（毫秒）：自动保存的连续小改动在此窗口内合并为一个版本。
+  versionCoalesceMs: 60_000,
   // 是否向系统提示注入「写作硬约束」与「写作类型」两段。
   //
   // 默认 false，这是刻意的：本插件挂在**宿主组合**里，对每个会话都生效。
@@ -59,6 +61,7 @@ function resolveConfig(raw) {
       ? input.promptSectionOrder
       : DEFAULT_CONFIG.promptSectionOrder,
     maxDocumentBytes: positive(input.maxDocumentBytes, DEFAULT_CONFIG.maxDocumentBytes),
+    versionCoalesceMs: positive(input.versionCoalesceMs, DEFAULT_CONFIG.versionCoalesceMs),
     injectPrompt: input.injectPrompt === true,
     interactionSelfTest: input.interactionSelfTest === true,
     workbenchSelfTest: input.workbenchSelfTest === true,
